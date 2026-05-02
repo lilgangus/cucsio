@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import type { MessageRow } from "@/types/db";
 
+import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 import {
   buildForestFromSessions,
   layoutForest,
@@ -60,6 +61,15 @@ type Props = {
 export function ForestCanvas({ projectId }: Props) {
   const { sessions, loading, error } = useProjectSessions(projectId);
   const [target, setTarget] = useState<OverlayTarget | null>(null);
+  const { setFocusedSessionId } = useSessionFocus();
+
+  /** Session channel we occupy for presence (`new-fork` stays on parent until fork exists). */
+  const activePresenceSessionId =
+    target?.kind === "session"
+      ? target.sessionId
+      : target?.kind === "new-fork"
+        ? target.parentSessionId
+        : null;
 
   // History captured at the moment Branch Off is clicked, so the
   // overlay can render the parent's messages while the fork API is
@@ -73,11 +83,18 @@ export function ForestCanvas({ projectId }: Props) {
   // hook owns all per-session channels (avoids the supabase-js channel
   // dedup that fires "cannot add presence callbacks after subscribe()").
   const sessionIds = useMemo(() => sessions.map((s) => s.id), [sessions]);
-  const activeSessionId = target?.kind === "session" ? target.sessionId : null;
   const presenceBySession = useForestPresence({
     sessionIds,
-    activeSessionId,
+    activeSessionId: activePresenceSessionId,
   });
+
+  useEffect(() => {
+    setFocusedSessionId(activePresenceSessionId);
+  }, [activePresenceSessionId, setFocusedSessionId]);
+
+  useEffect(() => {
+    return () => setFocusedSessionId(null);
+  }, [setFocusedSessionId]);
 
   // Filter out self for the card-level "others present" indicator —
   // seeing your own dot on every card you've ever opened is noisy.
@@ -233,7 +250,9 @@ export function ForestCanvas({ projectId }: Props) {
           presence={
             target.kind === "session"
               ? (presenceBySession[target.sessionId] ?? [])
-              : []
+              : target.kind === "new-fork"
+                ? (presenceBySession[target.parentSessionId] ?? [])
+                : []
           }
           prefetchedMessages={
             target.kind === "new-fork" ? pendingForkHistory : undefined
