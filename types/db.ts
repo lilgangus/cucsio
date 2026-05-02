@@ -35,6 +35,7 @@ export interface SessionRow {
   project_id: Uuid;
   parent_session_id: Uuid | null;
   fork_point_message_id: Uuid | null;
+  session_target: string;
   label: string | null;
   tags: string[];
   summary: string;

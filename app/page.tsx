@@ -42,6 +42,7 @@ function Landing() {
 
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [projectName, setProjectName] = useState("");
+  const [initialSessionTarget, setInitialSessionTarget] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -61,13 +62,21 @@ function Landing() {
   const handleCreate = async () => {
     if (!ready) return;
     const name = projectName.trim();
+    const target = initialSessionTarget.trim();
     if (!name) {
       toast.error("Pick a project name first");
       return;
     }
+    if (!target) {
+      toast.error("Add an initial session target");
+      return;
+    }
     setCreating(true);
     try {
-      const { project } = await createProject({ name });
+      const { project } = await createProject({
+        name,
+        initialSessionTarget: target,
+      });
       router.push(`/${project.room_code}`);
     } catch (err) {
       const message =
@@ -151,10 +160,25 @@ function Landing() {
               maxLength={64}
               disabled={!ready || creating}
             />
+            <Input
+              placeholder="Initial session target (e.g. Find root cause of latency)"
+              value={initialSessionTarget}
+              onChange={(e) => setInitialSessionTarget(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleCreate();
+              }}
+              maxLength={240}
+              disabled={!ready || creating}
+            />
             <Button
               className="w-full"
               onClick={() => void handleCreate()}
-              disabled={!ready || creating || projectName.trim().length === 0}
+              disabled={
+                !ready ||
+                creating ||
+                projectName.trim().length === 0 ||
+                initialSessionTarget.trim().length === 0
+              }
             >
               {creating ? "Creating..." : "Create project"}
             </Button>
