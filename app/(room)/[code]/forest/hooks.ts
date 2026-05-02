@@ -1,12 +1,44 @@
 "use client";
 
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { loadIdentity } from "@/lib/identity";
 import { sessionChannel, type PresenceState } from "@/lib/realtime/channels";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
-import type { MessageRow, SessionRow } from "@/types/db";
+import type { MessageRow, SessionRow, UserRow } from "@/types/db";
+
+/** Snapshot from `users` for message attribution (presence is ephemeral). */
+export type MessageAuthorSnippet = Pick<UserRow, "id" | "display_name" | "color">;
+
+function collectAuthorIds(messages: Iterable<MessageRow>): string[] {
+  const out = new Set<string>();
+  for (const m of messages) {
+    if (m.author_id) out.add(m.author_id);
+  }
+  return [...out];
+}
+
+async function fetchAuthorSnippets(
+  supabase: ReturnType<typeof getSupabaseBrowser>,
+  ids: string[]
+): Promise<MessageAuthorSnippet[]> {
+  const uniq = [...new Set(ids)];
+  if (uniq.length === 0) return [];
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, display_name, color")
+    .in("id", uniq);
+  if (error || !data) return [];
+  return data as MessageAuthorSnippet[];
+}
 
 /**
  * Live data hooks for the forest UI.
@@ -124,32 +156,109 @@ export function useProjectSessions(projectId: string | null): {
 }
 
 /**
- * Live list of messages in one session. Skips the subscription
- * entirely when `sessionId` is null (e.g. overlay closed) so we don't
- * burn a websocket on nothing.
+ * Live list of messages for one session. No realtime subscription while
+ * `sessionId` is null, but prefetch rows still drive `users`-row hydration
+ * (pending fork overlay). Attribution maps `messages.author_id` → `users`
+ * so bubbles don&apos;t rely on ephemeral presence alone.
  */
-export function useSessionMessages(sessionId: string | null): {
+export function useSessionMessages(
+  sessionId: string | null,
+  /** Visible seed rows before fetch (fork overlay); also drives author hydration while sessionId is null. */
+  prefetchMessages?: MessageRow[] | null
+): {
   messages: MessageRow[];
+  authorsByUserId: Record<string, MessageAuthorSnippet>;
+  /** Load `users` rows for the given IDs (fire-and-forget; merge is idempotent). */
+  ensureAuthorsKnown: (userIds: string[]) => void;
   loading: boolean;
   error: string | null;
 } {
   const [messages, setMessages] = useState<MessageRow[]>([]);
+  const [authorsByUserId, setAuthorsByUserId] = useState<
+    Record<string, MessageAuthorSnippet>
+  >({});
   const [loading, setLoading] = useState<boolean>(sessionId !== null);
   const [error, setError] = useState<string | null>(null);
 
+  /** Avoid re-subscribing `session-messages:*` every time fork seed arrays are re-created. */
+  const prefetchMessagesRef = useRef(prefetchMessages);
+  useLayoutEffect(() => {
+    prefetchMessagesRef.current = prefetchMessages;
+  }, [prefetchMessages]);
+
+  const mergeSnippetRows = useCallback((rows: MessageAuthorSnippet[]) => {
+    if (rows.length === 0) return;
+    setAuthorsByUserId((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const row of rows) {
+        const existing = next[row.id];
+        if (
+          !existing ||
+          existing.display_name !== row.display_name ||
+          existing.color !== row.color
+        ) {
+          next[row.id] = row;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const ensureAuthorsKnown = useCallback(
+    (userIds: string[]) => {
+      const uniq = [...new Set(userIds.filter(Boolean))];
+      if (uniq.length === 0) return;
+      void (async () => {
+        const supabase = getSupabaseBrowser();
+        const rows = await fetchAuthorSnippets(supabase, uniq);
+        mergeSnippetRows(rows);
+      })();
+    },
+    [mergeSnippetRows]
+  );
+
+  /** User rows for seed transcript (handles pending fork with sessionId == null). */
+  useEffect(() => {
+    const seed = prefetchMessages;
+    if (!seed?.length) return;
+    const supabase = getSupabaseBrowser();
+    let stale = false;
+    void (async () => {
+      const rows = await fetchAuthorSnippets(supabase, collectAuthorIds(seed));
+      if (stale) return;
+      mergeSnippetRows(rows);
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [prefetchMessages, mergeSnippetRows]);
+
   useEffect(() => {
     if (!sessionId) {
-      // Resetting state when the input "external param" goes null is
-      // the canonical sync-with-external-system effect; the lint rule
-      // is a heuristic so we suppress here.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages([]);
       setLoading(false);
+      setError(null);
       return;
     }
-    setLoading(true);
-    const supabase = getSupabaseBrowser();
+
     let cancelled = false;
+    const supabase = getSupabaseBrowser();
+
+    const hydrateAuthors = async (ids: string[]) => {
+      const uniq = [...new Set(ids.filter(Boolean))];
+      if (uniq.length === 0 || cancelled) return;
+      const rows = await fetchAuthorSnippets(supabase, uniq);
+      if (cancelled) return;
+      mergeSnippetRows(rows);
+    };
+
+    setLoading(true);
+    void hydrateAuthors(
+      collectAuthorIds(prefetchMessagesRef.current ?? [])
+    );
 
     (async () => {
       const { data, error: err } = await supabase
@@ -164,7 +273,10 @@ export function useSessionMessages(sessionId: string | null): {
         setLoading(false);
         return;
       }
-      setMessages((data ?? []) as MessageRow[]);
+      const rows = (data ?? []) as MessageRow[];
+      await hydrateAuthors(collectAuthorIds(rows));
+      if (cancelled) return;
+      setMessages(rows);
       setLoading(false);
     })();
 
@@ -183,6 +295,7 @@ export function useSessionMessages(sessionId: string | null): {
           setMessages((prev) =>
             prev.some((m) => m.id === row.id) ? prev : [...prev, row]
           );
+          void hydrateAuthors(row.author_id ? [row.author_id] : []);
         }
       )
       .subscribe();
@@ -192,9 +305,15 @@ export function useSessionMessages(sessionId: string | null): {
       void channel.unsubscribe();
       void supabase.removeChannel(channel);
     };
-  }, [sessionId]);
+  }, [sessionId, mergeSnippetRows]);
 
-  return { messages, loading, error };
+  return {
+    messages,
+    authorsByUserId,
+    ensureAuthorsKnown,
+    loading,
+    error,
+  };
 }
 
 /**
@@ -216,10 +335,10 @@ export function useSessionMessages(sessionId: string | null): {
  *   mounted by the canvas — and we share its results with the overlay
  *   via props.
  *
- * Tracking: we only call `track()` on the channel for `activeSessionId`.
- * That way opening a node makes you "present" in it; closing the
- * overlay (or switching nodes) untracks. Just being in the room
- * doesn't make you appear in every node.
+ * Tracking: exactly one `session:<id>` channel gets `track()` at a time —
+ * whichever session the overlay is occupying (including `"new-fork"`, which
+ * stays on the parent until the fork row exists). All other channels stay
+ * `untracked` so lingering presence entries don&apos;t linger.
  *
  * Strict-mode-friendly: channels are owned in a ref and torn down on
  * unmount. The per-id diff in the sessionIds effect adds new channels
@@ -234,6 +353,8 @@ export function useForestPresence({
 }): Record<string, PresenceState[]> {
   const [byId, setById] = useState<Record<string, PresenceState[]>>({});
   const channelsRef = useRef<Map<string, RealtimeChannel>>(new Map());
+  /** Always points at whichever session overlay is actively focused */
+  const activeRef = useRef<string | null>(activeSessionId);
 
   // Stable comma-joined key so identical-content arrays don't refire.
   const sessionIdsKey = useMemo(
@@ -241,12 +362,43 @@ export function useForestPresence({
     [sessionIds]
   );
 
+  useLayoutEffect(() => {
+    activeRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  /** Keep our presence footprint on exactly one channel at a time. */
+  async function reconcileAllTracks() {
+    const identity = loadIdentity();
+    if (!identity) return;
+    const active = activeRef.current;
+    for (const [id, ch] of channelsRef.current.entries()) {
+      try {
+        if (active === id) {
+          await ch.track({
+            clientId: identity.clientId,
+            displayName: identity.displayName,
+            color: identity.color,
+            joinedAt: new Date().toISOString(),
+            focusedSessionId: id,
+          });
+        } else {
+          await ch.untrack();
+        }
+      } catch {
+        // Race during subscribe/unsubscribe — ignore.
+      }
+    }
+  }
+
   // 1. Maintain a channel per session id (add/remove on diff). One
   //    owner per topic, so no `.channel(name)` collision with anyone
   //    else in the app.
   useEffect(() => {
-    const supabase = getSupabaseBrowser();
     const identity = loadIdentity();
+    const supabase = getSupabaseBrowser();
+    /** Without an identity ForestCanvas shouldn't render, but bail safely. */
+    if (!identity) return;
+
     const want = new Set(sessionIds);
     const have = channelsRef.current;
 
@@ -270,7 +422,7 @@ export function useForestPresence({
       const ch = supabase.channel(sessionChannel(id), {
         config: {
           presence: {
-            key: identity?.clientId ?? `anon-${crypto.randomUUID()}`,
+            key: identity.clientId,
           },
         },
       });
@@ -291,9 +443,16 @@ export function useForestPresence({
       ch.on("presence", { event: "sync" }, sync)
         .on("presence", { event: "join" }, sync)
         .on("presence", { event: "leave" }, sync)
-        .subscribe();
+        .subscribe(async (status) => {
+          if (status !== "SUBSCRIBED") return;
+          /** First sync after handshake — reconcile which session we occupy */
+          await reconcileAllTracks();
+        });
       have.set(id, ch);
     }
+    // Immediately reconcile in case subscriptions already OPEN.
+    void reconcileAllTracks();
+
     // No cleanup here — diff-based add/remove above plus the unmount
     // effect below handle tear-down. Returning a no-op also keeps
     // Strict Mode from tearing down everything between the two
@@ -301,39 +460,30 @@ export function useForestPresence({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionIdsKey]);
 
-  // 2. Track ourselves on the active session only. `.track()` is
-  //    queued until the channel reports SUBSCRIBED, so we don't need
-  //    a join-state listener.
+  // 2. When the focused session changes — hop presence between channels.
   useEffect(() => {
-    if (!activeSessionId) return;
-    const identity = loadIdentity();
-    if (!identity) return;
-    const ch = channelsRef.current.get(activeSessionId);
-    if (!ch) return;
+    void reconcileAllTracks();
 
-    let cancelled = false;
-    void (async () => {
-      try {
-        await ch.track({
-          clientId: identity.clientId,
-          displayName: identity.displayName,
-          color: identity.color,
-          joinedAt: new Date().toISOString(),
-        } satisfies PresenceState);
-      } catch (err) {
-        if (!cancelled) {
-          console.warn("[forest presence] track failed", err);
-        }
+    /** Heartbeat: Supabase docs recommend periodic re-tracking in long-lived tabs */
+    const hb = window.setInterval(() => {
+      void reconcileAllTracks();
+    }, 12000);
+
+    /** Tab sleep / reconnect — push presence immediately on wake */
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void reconcileAllTracks();
       }
-    })();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      cancelled = true;
-      // Best-effort untrack; if the channel is already gone (e.g.
-      // session deleted), Supabase quietly no-ops.
-      void ch.untrack().catch(() => undefined);
+      window.clearInterval(hb);
+      document.removeEventListener("visibilitychange", onVisibility);
+      void reconcileAllTracks();
     };
-  }, [activeSessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId, sessionIdsKey]);
 
   // 3. Tear everything down on unmount. (Strict Mode will run this
   //    between its double mounts; the sessionIds effect re-creates
