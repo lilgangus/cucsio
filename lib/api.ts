@@ -5,7 +5,12 @@ import {
   loadIdentity,
   type Identity,
 } from "@/lib/identity";
-import type { ProjectRow, SessionRow, UserRow } from "@/types/db";
+import type {
+  MessageRow,
+  ProjectRow,
+  SessionRow,
+  UserRow,
+} from "@/types/db";
 
 /** Thrown by `postJSON` when the server returns a non-2xx. */
 export class ApiError extends Error {
@@ -107,4 +112,64 @@ export function searchProject(
   body: SearchProjectBody
 ): Promise<SearchProjectResponse> {
   return postJSON<SearchProjectResponse>("/api/search", body);
+}
+
+// --- Sessions / chat -------------------------------------------------------
+
+export type CreateSessionBody = {
+  projectId: string;
+  label?: string;
+};
+
+export type CreateSessionResponse = { session: SessionRow };
+
+/** Plant a brand-new tree (a session with no parent). */
+export function createSession(
+  body: CreateSessionBody
+): Promise<CreateSessionResponse> {
+  return postJSON<CreateSessionResponse>("/api/sessions", body);
+}
+
+export type ForkSessionBody = {
+  /** Optional. Omit to fork from the latest message in the parent. */
+  forkPointMessageId?: string;
+  label?: string;
+};
+
+export type ForkSessionResponse = {
+  session: SessionRow;
+  copiedMessages: number;
+};
+
+/** Branch off from an existing session, copying its messages 1..N. */
+export function forkSession(
+  parentId: string,
+  body: ForkSessionBody = {}
+): Promise<ForkSessionResponse> {
+  return postJSON<ForkSessionResponse>(
+    `/api/sessions/${encodeURIComponent(parentId)}/fork`,
+    body
+  );
+}
+
+export type SendMessageBody = { content: string };
+
+export type SendMessageResponse = {
+  user: MessageRow;
+  assistant: MessageRow;
+};
+
+/**
+ * Send one message in a session. The server holds the session-wide
+ * "currently sending" lock for the whole roundtrip; this throws an
+ * `ApiError` with `status === 409` if someone else is mid-turn.
+ */
+export function sendMessage(
+  sessionId: string,
+  body: SendMessageBody
+): Promise<SendMessageResponse> {
+  return postJSON<SendMessageResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+    body
+  );
 }

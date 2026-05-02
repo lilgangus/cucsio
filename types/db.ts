@@ -45,6 +45,13 @@ export interface SessionRow {
   last_activity_at: IsoTimestamp;
   message_count: number;
   is_archived: boolean;
+  /**
+   * Lock fields (migration 0002): set while one user is actively
+   * sending a message in this session; null otherwise. Other users in
+   * the same session see disabled inputs while a lock is held.
+   */
+  pending_user_id: Uuid | null;
+  pending_since: IsoTimestamp | null;
 }
 
 export interface MessageRow {
