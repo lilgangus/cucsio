@@ -1,34 +1,40 @@
 "use client";
 
-import { CheckIcon, CopyIcon, LogOutIcon } from "lucide-react";
+import { CheckIcon, CopyIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { Button, buttonVariants } from "@/components/ui/button";
-import { displayLabel, loadIdentity, type Identity } from "@/lib/identity";
-import { cn } from "@/lib/utils";
+import { AccountMenu } from "@/components/account-menu";
+import { PresenceBar } from "@/components/presence-bar";
+import { Button } from "@/components/ui/button";
+import { loadIdentity, type Identity } from "@/lib/identity";
 
 type Props = {
   /** 6-char room code, already lowercased and validated upstream. */
   roomCode: string;
+  /** Project UUID, used as the Realtime channel key for presence. */
+  projectId: string;
+  /** Project name, hydrated server-side in the room layout. */
+  projectName: string;
 };
 
 /**
- * Top bar for the room shell. Renders project name (TODO: hydrate from DB),
- * a click-to-copy room code, and the local user's display-name pill.
+ * Top bar for the room shell. Renders project name, a click-to-copy
+ * room code, the live presence bar, and the account menu (which
+ * combines "Leave room" and "Sign out" actions).
  */
-export function TopBar({ roomCode }: Props) {
+export function TopBar({ roomCode, projectId, projectName }: Props) {
   const [identity, setIdentity] = useState<Identity | null>(null);
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    // localStorage is only reachable post-hydration; this is a sync-with-
-    // external-system read, the canonical escape hatch from the new
-    // react-hooks/set-state-in-effect lint.
+    // localStorage is only reachable post-hydration; sync-with-external-
+    // system read, canonical escape hatch from react-hooks/set-state-in-effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIdentity(loadIdentity());
   }, []);
+
+  const [copied, setCopied] = useState(false);
 
   const copyCode = async () => {
     try {
@@ -47,13 +53,12 @@ export function TopBar({ roomCode }: Props) {
         <Link href="/" className="font-heading text-base font-semibold">
           cucsio
         </Link>
-        <span className="text-sm text-muted-foreground">
-          {/* TODO(landing): hydrate project name from /api/projects/by-code/[code] */}
-          Untitled project
-        </span>
+        <span className="text-sm text-muted-foreground">{projectName}</span>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
+        <PresenceBar projectId={projectId} />
+
         <Button
           variant="outline"
           size="sm"
@@ -65,25 +70,12 @@ export function TopBar({ roomCode }: Props) {
         </Button>
 
         {identity ? (
-          <span className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1 text-xs">
-            <span
-              className="size-2 rounded-full"
-              style={{ background: identity.color }}
-              aria-hidden
-            />
-            {displayLabel(identity)}
-          </span>
+          <AccountMenu
+            identity={identity}
+            showLeaveRoom
+            onSignedOut={() => setIdentity(null)}
+          />
         ) : null}
-
-        <Link
-          href="/"
-          aria-label="Leave room"
-          className={cn(
-            buttonVariants({ variant: "ghost", size: "icon-sm" })
-          )}
-        >
-          <LogOutIcon />
-        </Link>
       </div>
     </header>
   );

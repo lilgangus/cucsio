@@ -1,9 +1,10 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { AccountMenu } from "@/components/account-menu";
 import { IdentityDialog } from "@/components/identity-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,91 +15,133 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { authHeaders, displayLabel, type Identity } from "@/lib/identity";
-
-const ROOM_CODE_LENGTH = 6;
-const ROOM_CODE_RE = /^[a-z0-9]{6}$/i;
+import { ApiError, createProject, upsertUser } from "@/lib/api";
+import { type Identity } from "@/lib/identity";
+import { projectExistsByCode } from "@/lib/projects";
+import { isValidRoomCode, normalizeRoomCode } from "@/lib/room-code";
+import { safeNextPath } from "@/lib/safe-next";
 
 export default function LandingPage() {
+  // useSearchParams must be inside a Suspense boundary in Next.js 16.
+  return (
+    <Suspense
+      fallback={
+        <main className="flex flex-1 flex-col items-center justify-center px-6 py-16" />
+      }
+    >
+      <Landing />
+    </Suspense>
+  );
+}
+
+function Landing() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const nextPath = safeNextPath(searchParams.get("next"));
+  const hasRedirect = nextPath !== "/";
+
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [projectName, setProjectName] = useState("");
+  const [initialSessionTarget, setInitialSessionTarget] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [creating, setCreating] = useState(false);
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [showIdentityDialog, setShowIdentityDialog] = useState(hasRedirect);
 
   const ready = identity !== null;
 
-  const syncIdentity = async (currentIdentity: Identity) => {
-    const response = await fetch("/api/users/upsert", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(currentIdentity),
-      },
-      body: JSON.stringify({
+  // If we got bounced back here from a room URL, send the user straight
+  // back as soon as identity is established.
+  useEffect(() => {
+    if (identity && hasRedirect) {
+      router.replace(nextPath);
+    }
+  }, [identity, hasRedirect, nextPath, router]);
+
+  const ensureServerIdentity = async (currentIdentity: Identity) => {
+    await upsertUser(
+      {
         displayName: currentIdentity.displayName,
         color: currentIdentity.color,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Identity sync failed: ${response.status}`);
-    }
+      },
+      currentIdentity
+    );
   };
 
   const handleCreate = async () => {
     if (!identity) return;
+
     const name = projectName.trim();
+    const target = initialSessionTarget.trim();
+
     if (!name) {
       toast.error("Pick a project name first");
       return;
     }
-    setCreating(true);
-    try {
-      await syncIdentity(identity);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not sync your identity"
-      );
-      setCreating(false);
+    if (!target) {
+      toast.error("Add an initial session target");
       return;
     }
-    // TODO(api): POST /api/projects { name } with x-client-id header,
-    //            read { code } from the response, then router.push.
-    //            For now we mint a fake code locally so the room shell is
-    //            navigable end-to-end without a backend.
-    console.warn(
-      "[cucsio] create-project API not implemented yet — using a local fake code"
-    );
-    const fakeCode = Math.random()
-      .toString(36)
-      .replace(/[^a-z0-9]/g, "")
-      .slice(0, ROOM_CODE_LENGTH)
-      .padEnd(ROOM_CODE_LENGTH, "x");
-    router.push(`/${fakeCode}`);
+
+    setCreating(true);
+
+    try {
+      await ensureServerIdentity(identity);
+      const { project } = await createProject({
+        name,
+        initialSessionTarget: target,
+      });
+      router.push(`/${project.room_code}`);
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? err.message : "Could not create project";
+      toast.error(message);
+    } finally {
+      setCreating(false);
+    }
   };
 
   const handleJoin = async () => {
-    if (!identity) return;
-    const code = joinCode.trim().toLowerCase();
-    if (!ROOM_CODE_RE.test(code)) {
-      toast.error("Room code must be 6 letters or digits");
+    if (!identity || joining) return;
+
+    const code = normalizeRoomCode(joinCode);
+    if (!isValidRoomCode(code)) {
+      setJoinError("Code must be 6 letters or digits");
       return;
     }
+
+    setJoining(true);
+    setJoinError(null);
+
     try {
-      await syncIdentity(identity);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not sync your identity"
-      );
-      return;
+      await ensureServerIdentity(identity);
+
+      const exists = await projectExistsByCode(code);
+      if (!exists) {
+        setJoinError("This code is not available");
+        return;
+      }
+
+      router.push(`/${code}`);
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : "Could not check the code. Try again.";
+      setJoinError(message);
+    } finally {
+      setJoining(false);
     }
-    router.push(`/${code}`);
   };
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center px-6 py-16">
-      <IdentityDialog onReady={setIdentity} />
+      <IdentityDialog
+        onReady={setIdentity}
+        open={showIdentityDialog}
+        onOpenChange={setShowIdentityDialog}
+      />
 
       <header className="mb-10 flex flex-col items-center gap-3 text-center">
         <h1 className="font-heading text-4xl font-semibold tracking-tight">
@@ -108,16 +151,18 @@ export default function LandingPage() {
           A multiplayer ChatGPT-style workspace. Open a room, share the code,
           and explore branching conversations together.
         </p>
-        {identity ? (
-          <div className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs">
-            <span
-              className="size-2 rounded-full"
-              style={{ background: identity.color }}
-              aria-hidden
-            />
-            <span>You are {displayLabel(identity)}</span>
+        {hasRedirect ? (
+          <div className="rounded-md border border-border bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
+            Pick a name to continue to <code className="font-mono">{nextPath}</code>
           </div>
         ) : null}
+        {identity ? (
+          <AccountMenu identity={identity} onSignedOut={() => setIdentity(null)} />
+        ) : (
+          <Button onClick={() => setShowIdentityDialog(true)}>
+            Log in with username
+          </Button>
+        )}
       </header>
 
       <div className="grid w-full max-w-3xl gap-6 sm:grid-cols-2">
@@ -132,17 +177,32 @@ export default function LandingPage() {
               value={projectName}
               onChange={(e) => setProjectName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreate();
+                if (e.key === "Enter") void handleCreate();
               }}
               maxLength={64}
               disabled={!ready || creating}
             />
+            <Input
+              placeholder="Initial session target (e.g. Find root cause of latency)"
+              value={initialSessionTarget}
+              onChange={(e) => setInitialSessionTarget(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleCreate();
+              }}
+              maxLength={240}
+              disabled={!ready || creating}
+            />
             <Button
               className="w-full"
-              onClick={handleCreate}
-              disabled={!ready || creating || projectName.trim().length === 0}
+              onClick={() => void handleCreate()}
+              disabled={
+                !ready ||
+                creating ||
+                projectName.trim().length === 0 ||
+                initialSessionTarget.trim().length === 0
+              }
             >
-              Create project
+              {creating ? "Creating..." : "Create project"}
             </Button>
           </CardContent>
         </Card>
@@ -156,24 +216,33 @@ export default function LandingPage() {
             <Input
               placeholder="6-char code"
               value={joinCode}
-              onChange={(e) =>
-                setJoinCode(e.target.value.replace(/[^a-z0-9]/gi, "").slice(0, 6))
-              }
+              onChange={(e) => {
+                setJoinCode(
+                  e.target.value.replace(/[^a-z0-9]/gi, "").slice(0, 6)
+                );
+                if (joinError) setJoinError(null);
+              }}
               onKeyDown={(e) => {
-                if (e.key === "Enter") handleJoin();
+                if (e.key === "Enter") void handleJoin();
               }}
               maxLength={6}
-              disabled={!ready}
+              disabled={!ready || joining}
+              aria-invalid={joinError ? true : undefined}
               className="font-mono uppercase tracking-widest"
             />
             <Button
               className="w-full"
               variant="outline"
-              onClick={handleJoin}
-              disabled={!ready || !ROOM_CODE_RE.test(joinCode.trim())}
+              onClick={() => void handleJoin()}
+              disabled={!ready || joining || !isValidRoomCode(joinCode)}
             >
-              Join
+              {joining ? "Checking..." : "Join"}
             </Button>
+            {joinError ? (
+              <p role="alert" className="text-xs text-destructive">
+                {joinError}
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       </div>

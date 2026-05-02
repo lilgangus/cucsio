@@ -7,8 +7,9 @@ import { toast } from "sonner";
 
 import { ChatSession } from "@/components/chat";
 import { Button } from "@/components/ui/button";
-import { useRoomProject, type RoomSession } from "@/lib/chat/use-room-project";
-import { authHeaders, loadIdentity, type Identity } from "@/lib/identity";
+import { ApiError, createSession } from "@/lib/api";
+import { useRoomProject } from "@/lib/chat/use-room-project";
+import { loadIdentity, type Identity } from "@/lib/identity";
 
 type Props = {
   roomCode: string;
@@ -52,28 +53,15 @@ export function ChatPanel({ roomCode }: Props) {
     return availableSessions[0];
   }, [requestedSessionId, room]);
 
-  const createSession = async () => {
+  const handleCreateSession = async () => {
     if (!identity || !room) return;
 
     setCreatingSession(true);
 
     try {
-      const response = await fetch("/api/sessions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders(identity),
-        },
-        // TODO(Dev A): remove this fallback once project creation always
-        // provisions an initial session for newly-created rooms.
-        body: JSON.stringify({ projectId: room.id }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Create session failed: ${response.status}`);
-      }
-
-      const { session } = (await response.json()) as { session: RoomSession };
+      // TODO(Dev A): remove this fallback once project creation always
+      // provisions an initial session for newly-created rooms.
+      const { session } = await createSession({ projectId: room.id });
 
       await mutate(
         (current) =>
@@ -97,7 +85,9 @@ export function ChatPanel({ roomCode }: Props) {
       toast.success("Session created.");
     } catch (createError) {
       toast.error(
-        createError instanceof Error ? createError.message : "Could not create session"
+        createError instanceof ApiError || createError instanceof Error
+          ? createError.message
+          : "Could not create session"
       );
     } finally {
       setCreatingSession(false);
@@ -156,7 +146,7 @@ export function ChatPanel({ roomCode }: Props) {
               Create the first chat thread for this room and we&apos;ll drop you into it.
             </p>
           </div>
-          <Button onClick={createSession} disabled={creatingSession}>
+          <Button onClick={handleCreateSession} disabled={creatingSession}>
             {creatingSession ? "Creating..." : "Create one"}
           </Button>
         </div>

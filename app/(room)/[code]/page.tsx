@@ -1,9 +1,10 @@
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { notFound } from "next/navigation";
+
+import { getSupabaseServer } from "@/lib/supabase/server";
 
 import { ChatPanel } from "./chat/ChatPanel";
-import { HighlightsPanel } from "./highlights/HighlightsPanel";
-import { SearchPanel } from "./search/SearchPanel";
-import { TreeBackground } from "./tree/TreeBackground";
+import { ForestCanvas } from "./forest/ForestCanvas";
+import { RightPanel } from "./right/RightPanel";
 
 type Props = {
   params: Promise<{ code: string }>;
@@ -11,11 +12,13 @@ type Props = {
 };
 
 /**
- * Room page: 2/3 left (chat over tree), 1/3 right (Highlights | Search tabs).
+ * Room page: 2/3 left (forest canvas when enabled, chat fallback when
+ * `?tree=off`), 1/3 right (search + highlights).
  *
- * Honors `?tree=off` (per AGENTS.md don't-forget list) by hiding the
- * React Flow background entirely. Build this flag in hour 1 in case
- * the tree misbehaves late in the build.
+ * Re-resolves `projectId` here so `ForestCanvas` and the right panel
+ * can subscribe without reaching into the layout's server fetch.
+ *
+ * Honors `?tree=off` (per AGENTS.md don't-forget list).
  */
 export default async function RoomPage({ params, searchParams }: Props) {
   const [{ code }, search] = await Promise.all([params, searchParams]);
@@ -23,26 +26,28 @@ export default async function RoomPage({ params, searchParams }: Props) {
   const treeEnabled = treeParam !== "off";
   const normalized = code.toLowerCase();
 
+  const supabase = getSupabaseServer();
+  const { data: project } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("room_code", normalized)
+    .maybeSingle();
+
+  if (!project) notFound();
+  const projectId = project.id as string;
+
   return (
     <div className="grid min-h-0 flex-1 grid-cols-3 gap-0">
       <div className="relative col-span-2 flex min-h-0 flex-col overflow-hidden border-r border-border">
-        {treeEnabled ? <TreeBackground roomCode={normalized} /> : null}
-        <ChatPanel roomCode={normalized} />
+        {treeEnabled ? (
+          <ForestCanvas projectId={projectId} />
+        ) : (
+          <ChatPanel roomCode={normalized} />
+        )}
       </div>
 
       <aside className="col-span-1 flex min-h-0 flex-col bg-card">
-        <Tabs defaultValue="highlights" className="flex h-full min-h-0 flex-col">
-          <TabsList className="m-3">
-            <TabsTrigger value="highlights">Highlights</TabsTrigger>
-            <TabsTrigger value="search">Search</TabsTrigger>
-          </TabsList>
-          <TabsContent value="highlights" className="min-h-0 flex-1 overflow-y-auto">
-            <HighlightsPanel roomCode={normalized} />
-          </TabsContent>
-          <TabsContent value="search" className="min-h-0 flex-1 overflow-y-auto">
-            <SearchPanel />
-          </TabsContent>
-        </Tabs>
+        <RightPanel projectId={projectId} roomCode={normalized} />
       </aside>
     </div>
   );

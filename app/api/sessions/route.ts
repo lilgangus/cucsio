@@ -1,13 +1,21 @@
 import { NextResponse } from "next/server";
 
-import { CLIENT_ID_HEADER } from "@/lib/identity";
 import {
   PROJECT_BROADCAST_EVENT,
   projectChannel,
   type ProjectEvent,
 } from "@/lib/realtime/channels";
+import { getClientId } from "@/lib/server/request";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import type { SessionRow } from "@/types/db";
+
+type Body = {
+  projectId?: unknown;
+  label?: unknown;
+};
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function broadcastProjectEvent(projectId: string, event: ProjectEvent) {
   const supabase = getSupabaseServer();
@@ -24,55 +32,95 @@ async function broadcastProjectEvent(projectId: string, event: ProjectEvent) {
   }
 }
 
-// TODO(Dev A): remove this temporary hackathon route once project creation
-// reliably provisions the default session on the server.
-export async function POST(request: Request) {
-  const clientId = request.headers.get(CLIENT_ID_HEADER);
+/**
+ * Create a new root session inside a project.
+ *
+ * Used both by the forest UI's "+ new chat" flow and by the room chat
+ * fallback if a legacy project somehow has zero sessions. Forks live
+ * in `/api/sessions/[id]/fork`.
+ */
+export async function POST(req: Request) {
+  const clientId = getClientId(req);
   if (!clientId) {
-    return NextResponse.json({ error: "missing_client_id" }, { status: 400 });
+    return NextResponse.json(
+      { error: "missing or malformed x-client-id header" },
+      { status: 401 }
+    );
   }
 
-  const { projectId } = (await request.json()) as { projectId?: string };
-  if (!projectId?.trim()) {
-    return NextResponse.json({ error: "missing_project_id" }, { status: 400 });
+  let body: Body;
+  try {
+    body = (await req.json()) as Body;
+  } catch {
+    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
+
+  const projectId = typeof body.projectId === "string" ? body.projectId : "";
+  if (!UUID_RE.test(projectId)) {
+    return NextResponse.json(
+      { error: "projectId must be a uuid" },
+      { status: 400 }
+    );
+  }
+
+  const rawLabel = typeof body.label === "string" ? body.label.trim() : "";
+  const label = rawLabel.length > 0 ? rawLabel.slice(0, 64) : null;
+  const sessionTarget = label ?? "General exploration";
 
   const supabase = getSupabaseServer();
+
   const { data: user, error: userError } = await supabase
     .from("users")
     .select("id")
     .eq("id", clientId)
-    .single<{ id: string }>();
+    .maybeSingle();
 
-  if (userError || !user) {
-    return NextResponse.json({ error: "user_not_found" }, { status: 404 });
+  if (userError) {
+    console.error("[/api/sessions] user lookup failed", userError);
+    return NextResponse.json({ error: userError.message }, { status: 500 });
+  }
+  if (!user) {
+    return NextResponse.json({ error: "user not found" }, { status: 404 });
   }
 
   const { data: project, error: projectError } = await supabase
     .from("projects")
     .select("id")
     .eq("id", projectId)
-    .single<{ id: string }>();
+    .maybeSingle();
 
-  if (projectError || !project) {
-    return NextResponse.json({ error: "project_not_found" }, { status: 404 });
+  if (projectError) {
+    console.error("[/api/sessions] project lookup failed", projectError);
+    return NextResponse.json({ error: projectError.message }, { status: 500 });
+  }
+  if (!project) {
+    return NextResponse.json({ error: "project not found" }, { status: 404 });
   }
 
-  const { data: session, error: sessionError } = await supabase
+  const { data, error } = await supabase
     .from("sessions")
     .insert({
-      project_id: project.id,
-      created_by: user.id,
-      label: "New session",
+      project_id: projectId,
+      parent_session_id: null,
+      fork_point_message_id: null,
+      label,
+      session_target: sessionTarget,
+      created_by: clientId,
     })
-    .select("*")
-    .single<SessionRow>();
+    .select()
+    .single();
 
-  if (sessionError || !session) {
-    return NextResponse.json({ error: "insert_failed" }, { status: 500 });
+  if (error || !data) {
+    console.error("[/api/sessions] insert failed", error);
+    return NextResponse.json(
+      { error: error?.message ?? "could not create session" },
+      { status: 500 }
+    );
   }
 
-  await broadcastProjectEvent(project.id, {
+  const session = data as SessionRow;
+
+  await broadcastProjectEvent(projectId, {
     type: "session_created",
     session,
   });

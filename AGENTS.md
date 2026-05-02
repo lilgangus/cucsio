@@ -152,7 +152,10 @@ While a stream is in flight, lock everyone's input on that session. Unlock on `a
   - No tiktoken counter — `gpt-4o-mini`'s 128k window has huge headroom under `master_context` (≤ ~2k tokens) + 5 × 200-token ancestor summaries + 30 recent messages.
 - **Burst coalescing**: server waits 500ms after the last user-message insert in a session before issuing a single assistant turn that sees all of them.
 - **Summary regeneration** = on fork, and whenever a session's `message_count` crosses a multiple of 10. Server action loads all messages, asks the model to summarize in ≤ 200 tokens, writes to `sessions.summary`.
-- **Search** = single stateless call. **System prompt contains every session's `id`, `label`, and `summary` for the project** — this is the *only* place we go cross-tree. User message is the query. Instruct the model to cite session IDs in `[[<id>]]` form. The UI parses citations and links them to the tree.
+- **Search** = single stateless call. **System prompt contains every session's `id`, `label`, `session_target`, and `summary` for the project** — this is the *only* place we go cross-tree. User message is the query.
+  - First pass (planner): select a small set of likely-relevant session IDs.
+  - Second pass (answerer): inject deeper context from those sessions and answer with citations.
+  - Instruct the model to cite session IDs in `[[<id>]]` form. The UI parses citations and links them to the tree.
 - **Auto-highlights (stretch only)** = ask the model to optionally emit `proposeHighlight({ message_id, snippet, reason })`. Insert with `source='ai'`.
 
 ## Data model (source of truth — keep `db/migrations/` in sync)
@@ -195,6 +198,7 @@ create table sessions (
   project_id uuid not null references projects(id) on delete cascade,
   parent_session_id uuid references sessions(id) on delete set null,
   fork_point_message_id uuid,
+  session_target text not null,
   label text,
   tags text[] not null default '{}',
   summary text not null default '',
@@ -252,6 +256,7 @@ create index on highlights (session_id, created_at);
 ## Forking semantics
 
 - Fork = copy. When a user forks from `messageId` of session A, insert a new `sessions` row with `parent_session_id = A.id` and `fork_point_message_id = messageId`, then copy messages 1..N from A into the new session as fresh rows.
+- Every new session must have an explicit `session_target` authored by the user before the session starts (e.g. "Find root cause of timeout in payments").
 - Cheap, simple, makes the tree easy to render. The duplication cost is fine for an MVP.
 - Multi-parent merges are out of scope. Don't add a `session_parents` join table.
 
@@ -268,6 +273,7 @@ create index on highlights (session_id, created_at);
 - Always pass the `clientId` header on writes; otherwise `created_by` will be NULL and the UI looks broken.
 - Lock all chat inputs in a session while an assistant stream is in flight. Unlock on `assistant_done`.
 - Re-summarize a session on fork and every 10 new messages — search quality depends on it.
+- Require a non-empty `sessions.session_target` whenever creating a session (root or forked). Search quality depends on this.
 - Ship a fallback "session list sidebar" behind a `?tree=off` URL flag in case React Flow misbehaves late in the build. Build the flag in hour 1.
 - Bump `sessions.last_activity_at` and increment `sessions.message_count` on every message insert (do it in the same server action as the insert).
 
