@@ -16,9 +16,18 @@ cp .env.example .env.local        # then fill in Supabase + OpenAI keys
 npm run dev                       # http://localhost:3000
 ```
 
-Run [`db/migrations/0001_init.sql`](db/migrations/0001_init.sql) once in the
-Supabase SQL editor before signing in. RLS is intentionally disabled for the
-hackathon (see AGENTS.md).
+Run the SQL files in [`db/migrations/`](db/migrations/) in order, in the
+Supabase SQL editor, before signing in:
+
+1. [`0001_init.sql`](db/migrations/0001_init.sql) — base schema.
+2. [`0002_session_target.sql`](db/migrations/0002_session_target.sql) —
+   adds `sessions.session_target` (user-authored context for search).
+3. [`0003_session_lock_and_realtime.sql`](db/migrations/0003_session_lock_and_realtime.sql) —
+   adds the per-session "currently sending" lock and turns on Postgres
+   realtime replication for `sessions` and `messages` so the forest UI's
+   live hooks fire.
+
+RLS is intentionally disabled for the hackathon (see AGENTS.md).
 
 The landing page lets you create a project (currently with a fake local code,
 until the create-project API lands) or join one by 6-char code. Append
