@@ -7,6 +7,7 @@ import type { ProjectRow, SessionRow } from "@/types/db";
 
 type Body = {
   name?: unknown;
+  initialSessionTarget?: unknown;
 };
 
 const MAX_CODE_RETRIES = 5;
@@ -41,9 +42,19 @@ export async function POST(req: Request) {
   }
 
   const name = typeof body.name === "string" ? body.name.trim() : "";
+  const initialSessionTarget =
+    typeof body.initialSessionTarget === "string"
+      ? body.initialSessionTarget.trim()
+      : "";
   if (name.length === 0 || name.length > 128) {
     return NextResponse.json(
       { error: "name must be 1-128 chars" },
+      { status: 400 }
+    );
+  }
+  if (initialSessionTarget.length === 0 || initialSessionTarget.length > 240) {
+    return NextResponse.json(
+      { error: "initialSessionTarget must be 1-240 chars" },
       { status: 400 }
     );
   }
@@ -92,6 +103,7 @@ export async function POST(req: Request) {
     .insert({
       project_id: project.id,
       label: "Main",
+      session_target: initialSessionTarget,
       created_by: clientId,
     })
     .select()

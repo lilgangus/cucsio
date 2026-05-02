@@ -78,6 +78,7 @@ export function upsertUser(
 
 export type CreateProjectBody = {
   name: string;
+  initialSessionTarget: string;
 };
 
 export type CreateProjectResponse = {
@@ -89,4 +90,21 @@ export function createProject(
   body: CreateProjectBody
 ): Promise<CreateProjectResponse> {
   return postJSON<CreateProjectResponse>("/api/projects", body);
+}
+
+export type SearchProjectBody = {
+  projectId: string;
+  query: string;
+};
+
+export type SearchProjectResponse = {
+  answer: string;
+  selectedSessionIds: string[];
+  searchPlan: string;
+};
+
+export function searchProject(
+  body: SearchProjectBody
+): Promise<SearchProjectResponse> {
+  return postJSON<SearchProjectResponse>("/api/search", body);
 }
