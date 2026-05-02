@@ -23,6 +23,12 @@ import {
 type Props = {
   /** Called once an identity is available AND has been upserted server-side. */
   onReady: (identity: Identity) => void;
+  /**
+   * Controlled mode (optional): pass open + onOpenChange to let the
+   * parent decide when the dialog should be shown.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 async function syncIdentity(identity: Identity): Promise<void> {
@@ -52,10 +58,16 @@ async function syncIdentity(identity: Identity): Promise<void> {
  * If an identity already exists, fires `onReady` immediately and refreshes
  * the server row in the background (best-effort, non-blocking).
  */
-export function IdentityDialog({ onReady }: Props) {
-  const [open, setOpen] = useState(false);
+export function IdentityDialog({ onReady, open, onOpenChange }: Props) {
+  const [internalOpen, setInternalOpen] = useState(false);
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const controlled = typeof open === "boolean";
+  const resolvedOpen = controlled ? open : internalOpen;
+  const setResolvedOpen = (next: boolean) => {
+    if (!controlled) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
 
   useEffect(() => {
     // localStorage isn't reachable during SSR, so this is the canonical
@@ -66,11 +78,11 @@ export function IdentityDialog({ onReady }: Props) {
       onReady(existing);
       // Best-effort background refresh of the row's last_seen_at.
       void syncIdentity(existing);
-    } else {
+    } else if (!controlled) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setOpen(true);
+      setInternalOpen(true);
     }
-  }, [onReady]);
+  }, [onReady, controlled]);
 
   const submit = async () => {
     const trimmed = name.trim();
@@ -79,12 +91,12 @@ export function IdentityDialog({ onReady }: Props) {
     const identity = ensureIdentity(trimmed);
     await syncIdentity(identity);
     setSubmitting(false);
-    setOpen(false);
+    setResolvedOpen(false);
     onReady(identity);
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={resolvedOpen} onOpenChange={setResolvedOpen}>
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle>Pick a display name</DialogTitle>

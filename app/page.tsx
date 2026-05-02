@@ -46,6 +46,7 @@ function Landing() {
   const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [showIdentityDialog, setShowIdentityDialog] = useState(hasRedirect);
 
   const ready = identity !== null;
 
@@ -102,7 +103,11 @@ function Landing() {
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center px-6 py-16">
-      <IdentityDialog onReady={setIdentity} />
+      <IdentityDialog
+        onReady={setIdentity}
+        open={showIdentityDialog}
+        onOpenChange={setShowIdentityDialog}
+      />
 
       <header className="mb-10 flex flex-col items-center gap-3 text-center">
         <h1 className="font-heading text-4xl font-semibold tracking-tight">
@@ -122,7 +127,11 @@ function Landing() {
             identity={identity}
             onSignedOut={() => setIdentity(null)}
           />
-        ) : null}
+        ) : (
+          <Button onClick={() => setShowIdentityDialog(true)}>
+            Log in with username
+          </Button>
+        )}
       </header>
 
       <div className="grid w-full max-w-3xl gap-6 sm:grid-cols-2">
