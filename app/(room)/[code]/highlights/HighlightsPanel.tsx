@@ -1,22 +1,26 @@
 "use client";
 
-import { PinIcon } from "lucide-react";
+import { Backboard } from "@/components/highlights";
+import { useRoomProject } from "@/lib/chat/use-room-project";
 
-/**
- * Placeholder for the shared backboard.
- *
- * Owner: highlights feature PR. Replace with:
- *   - subscribe to `project:{id}` highlight_created events
- *   - list of pinned snippets, click → scrolls source message into view
- *     in the chat panel (and switches sessions if needed)
- *   - selection-driven "pin this" flow on text inside the chat
- * See AGENTS.md MVP scope #7.
- */
-export function HighlightsPanel() {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-muted-foreground">
-      <PinIcon className="size-6 opacity-40" />
-      <p className="text-sm">Highlight a chat snippet to pin it here.</p>
-    </div>
-  );
+export function HighlightsPanel({ roomCode }: { roomCode: string }) {
+  const { data: project, error, isLoading } = useRoomProject(roomCode);
+
+  if (isLoading) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
+        Loading highlights...
+      </div>
+    );
+  }
+
+  if (error || !project) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
+        Highlights appear once a project is loaded.
+      </div>
+    );
+  }
+
+  return <Backboard projectId={project.id} />;
 }

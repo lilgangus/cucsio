@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { displayLabel, type Identity } from "@/lib/identity";
+import { authHeaders, displayLabel, type Identity } from "@/lib/identity";
 
 const ROOM_CODE_LENGTH = 6;
 const ROOM_CODE_RE = /^[a-z0-9]{6}$/i;
@@ -28,14 +28,41 @@ export default function LandingPage() {
 
   const ready = identity !== null;
 
+  const syncIdentity = async (currentIdentity: Identity) => {
+    const response = await fetch("/api/users/upsert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(currentIdentity),
+      },
+      body: JSON.stringify({
+        displayName: currentIdentity.displayName,
+        color: currentIdentity.color,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Identity sync failed: ${response.status}`);
+    }
+  };
+
   const handleCreate = async () => {
-    if (!ready) return;
+    if (!identity) return;
     const name = projectName.trim();
     if (!name) {
       toast.error("Pick a project name first");
       return;
     }
     setCreating(true);
+    try {
+      await syncIdentity(identity);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not sync your identity"
+      );
+      setCreating(false);
+      return;
+    }
     // TODO(api): POST /api/projects { name } with x-client-id header,
     //            read { code } from the response, then router.push.
     //            For now we mint a fake code locally so the room shell is
@@ -51,11 +78,19 @@ export default function LandingPage() {
     router.push(`/${fakeCode}`);
   };
 
-  const handleJoin = () => {
-    if (!ready) return;
+  const handleJoin = async () => {
+    if (!identity) return;
     const code = joinCode.trim().toLowerCase();
     if (!ROOM_CODE_RE.test(code)) {
       toast.error("Room code must be 6 letters or digits");
+      return;
+    }
+    try {
+      await syncIdentity(identity);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not sync your identity"
+      );
       return;
     }
     router.push(`/${code}`);

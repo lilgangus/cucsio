@@ -37,7 +37,7 @@ export default async function RoomPage({ params, searchParams }: Props) {
             <TabsTrigger value="search">Search</TabsTrigger>
           </TabsList>
           <TabsContent value="highlights" className="min-h-0 flex-1 overflow-y-auto">
-            <HighlightsPanel />
+            <HighlightsPanel roomCode={normalized} />
           </TabsContent>
           <TabsContent value="search" className="min-h-0 flex-1 overflow-y-auto">
             <SearchPanel />

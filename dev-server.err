@@ -1,0 +1,350 @@
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <main className="flex min-h...">
+      <div>
+      <section className="flex flex-...">
+        <div className="mx-auto gr...">
+          <div className="min-h-0 ov...">
+            <ChatSession sessionId="mock" projectId="mock" identity={{clientId:"...", ...}}>
+              <MockChatSessionInner identity={{clientId:"...", ...}} projectId="mock" sessionId="mock">
+                <ChatSessionLayout messages={[...]} draft={null} ...>
+                  <div className="flex h-ful...">
+                    <MessageList messages={[...]} draft={null} identity={{clientId:"...", ...}} ...>
+                      <div className="relative f...">
+                        <div ref={{current:null}} className="h-full ove...">
+                          <div className="mx-auto fl...">
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"176211...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="176211ab-ffc5-40d0-975d-6c0dd357d10c"
+-                                 data-message-id="714deb25-65c5-4b7a-ab87-b0f63a03ae68"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"72e01b...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="72e01b05-1e97-4142-8457-e82482e8b762"
+-                                 data-message-id="991d2aa2-1949-4250-8b90-ffc54df432e8"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"5da5f3...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="5da5f32f-c259-44d7-a3fe-290ee8880aa4"
+-                                 data-message-id="bc9b9b34-ca84-42a9-b1ba-124f1b177a93"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                    ...
+          ...
+ 
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <main className="flex min-h...">
+      <div>
+      <section className="flex flex-...">
+        <div className="mx-auto gr...">
+          <div className="min-h-0 ov...">
+            <ChatSession sessionId="mock" projectId="mock" identity={{clientId:"...", ...}}>
+              <MockChatSessionInner identity={{clientId:"...", ...}} projectId="mock" sessionId="mock">
+                <ChatSessionLayout messages={[...]} draft={null} ...>
+                  <div className="flex h-ful...">
+                    <MessageList messages={[...]} draft={null} identity={{clientId:"...", ...}} ...>
+                      <div className="relative f...">
+                        <div ref={{current:null}} className="h-full ove...">
+                          <div className="mx-auto fl...">
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"4970dc...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="4970dc45-d4bd-4089-bb6d-e22b3d30d566"
+-                                 data-message-id="4183c6ba-8091-4f3c-bfd3-380bf3c350a8"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"a9ca33...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="a9ca334d-af8f-47fe-a24c-ae238e5d6be4"
+-                                 data-message-id="25b470db-63a9-42f0-aa16-cf27063e5a12"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"b807df...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="b807df86-3ae0-484e-9ce5-c90fedc936bf"
+-                                 data-message-id="f7faa590-05ec-4566-a852-6deb53efc822"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                    ...
+          ...
+ 
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <main className="flex min-h...">
+      <div>
+      <section className="flex flex-...">
+        <div className="mx-auto gr...">
+          <div className="min-h-0 ov...">
+            <ChatSession sessionId="mock" projectId="mock" identity={{clientId:"...", ...}}>
+              <MockChatSessionInner identity={{clientId:"...", ...}} projectId="mock" sessionId="mock">
+                <ChatSessionLayout messages={[...]} draft={null} ...>
+                  <div className="flex h-ful...">
+                    <MessageList messages={[...]} draft={null} identity={{clientId:"...", ...}} ...>
+                      <div className="relative f...">
+                        <div ref={{current:null}} className="h-full ove...">
+                          <div className="mx-auto fl...">
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"840dd6...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="840dd65b-f781-4517-990c-269328b74f3a"
+-                                 data-message-id="4183c6ba-8091-4f3c-bfd3-380bf3c350a8"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"8ee598...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="8ee598ea-b310-4cad-ad02-93128e2bc937"
+-                                 data-message-id="25b470db-63a9-42f0-aa16-cf27063e5a12"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"8640d8...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="8640d84a-7370-4dde-b94b-c94ceb141448"
+-                                 data-message-id="f7faa590-05ec-4566-a852-6deb53efc822"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                    ...
+          ...
+ 
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <main className="flex min-h...">
+      <div>
+      <section className="flex flex-...">
+        <div className="mx-auto gr...">
+          <div className="min-h-0 ov...">
+            <ChatSession sessionId="mock" projectId="mock" identity={{clientId:"...", ...}}>
+              <MockChatSessionInner identity={{clientId:"...", ...}} projectId="mock" sessionId="mock">
+                <ChatSessionLayout messages={[...]} draft={null} ...>
+                  <div className="flex h-ful...">
+                    <MessageList messages={[...]} draft={null} identity={{clientId:"...", ...}} ...>
+                      <div className="relative f...">
+                        <div ref={{current:null}} className="h-full ove...">
+                          <div className="mx-auto fl...">
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"adf5bd...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="adf5bdcd-546d-454f-b0c5-132f8f9a5298"
+-                                 data-message-id="4183c6ba-8091-4f3c-bfd3-380bf3c350a8"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"9d8c66...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="9d8c669d-df5a-4c6c-9205-d36c166db3d1"
+-                                 data-message-id="25b470db-63a9-42f0-aa16-cf27063e5a12"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"547367...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="547367b3-f254-4db3-b1a3-d6f7aae72e48"
+-                                 data-message-id="f7faa590-05ec-4566-a852-6deb53efc822"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                    ...
+          ...
+ 
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <main className="flex min-h...">
+      <div>
+      <section className="flex flex-...">
+        <div className="mx-auto gr...">
+          <div className="min-h-0 ov...">
+            <ChatSession sessionId="mock" projectId="mock" identity={{clientId:"...", ...}}>
+              <MockChatSessionInner identity={{clientId:"...", ...}} projectId="mock" sessionId="mock">
+                <ChatSessionLayout messages={[...]} draft={null} ...>
+                  <div className="flex h-ful...">
+                    <MessageList messages={[...]} draft={null} identity={{clientId:"...", ...}} ...>
+                      <div className="relative f...">
+                        <div ref={{current:null}} className="h-full ove...">
+                          <div className="mx-auto fl...">
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"671ca8...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="671ca8b4-8b91-4cfc-8d6a-9cd153e912a0"
+-                                 data-message-id="4183c6ba-8091-4f3c-bfd3-380bf3c350a8"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"bde7ba...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="bde7ba3b-693a-4f76-b915-def7e95f606a"
+-                                 data-message-id="25b470db-63a9-42f0-aa16-cf27063e5a12"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"fa6c12...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="fa6c1213-ce6c-4e00-9fb6-39ad817e890f"
+-                                 data-message-id="f7faa590-05ec-4566-a852-6deb53efc822"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                    ...
+          ...
+ 
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <main className="flex min-h...">
+      <div>
+      <section className="flex flex-...">
+        <div className="mx-auto gr...">
+          <div className="min-h-0 ov...">
+            <ChatSession sessionId="mock" projectId="mock" identity={{clientId:"...", ...}}>
+              <MockChatSessionInner identity={{clientId:"...", ...}} projectId="mock" sessionId="mock">
+                <ChatSessionLayout messages={[...]} draft={null} ...>
+                  <div className="flex h-ful...">
+                    <MessageList messages={[...]} draft={null} identity={{clientId:"...", ...}} ...>
+                      <div className="relative f...">
+                        <div ref={{current:null}} className="h-full ove...">
+                          <div className="mx-auto fl...">
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"8cdc74...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="8cdc746d-7c17-4761-8542-01f45d468ca0"
+-                                 data-message-id="2c90c1f4-e851-436d-87d2-ebb5695954a6"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"731efe...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="731efe81-56c1-49a0-b7bf-17c2c490b9ef"
+-                                 data-message-id="5f9f97c8-fa46-48b1-a2eb-183721321f69"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"cead7a...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="cead7a2a-d18c-45e8-b307-88ce79fbaff5"
+-                                 data-message-id="625cd61a-3bc8-4146-8d63-a67fbe74b3b8"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                    ...
+          ...
+ 
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <main className="flex min-h...">
+      <div>
+      <section className="flex flex-...">
+        <div className="mx-auto gr...">
+          <div className="min-h-0 ov...">
+            <ChatSession sessionId="mock" projectId="mock" identity={{clientId:"...", ...}}>
+              <MockChatSessionInner identity={{clientId:"...", ...}} projectId="mock" sessionId="mock">
+                <ChatSessionLayout messages={[...]} draft={null} ...>
+                  <div className="flex h-ful...">
+                    <MessageList messages={[...]} draft={null} identity={{clientId:"...", ...}} ...>
+                      <div className="relative f...">
+                        <div ref={{current:null}} className="h-full ove...">
+                          <div className="mx-auto fl...">
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"c424fa...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="c424fa21-e1aa-4f76-8ca2-4363a01b3bb7"
+-                                 data-message-id="f00d1d7c-8160-431b-860b-1e09e900b24c"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"05ecad...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="05ecade6-d330-4301-be9c-a58f8579ae5c"
+-                                 data-message-id="d6eca798-aede-46f6-b5fe-a6b5e3a2c7a3"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                            <div className="pt-4 first...">
+                              <MessageBubble message={{id:"7cc918...", ...}} user={null} identity={{clientId:"...", ...}} ...>
+                                <div
++                                 data-message-id="7cc91830-01a7-432a-ac66-4563855a0d64"
+-                                 data-message-id="ba52af4e-4dcb-441d-bd4c-a8bdb35b71c7"
+                                  className="grid grid-cols-[32px_minmax(0,1fr)] gap-3"
+                                >
+                    ...
+          ...
+ 

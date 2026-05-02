@@ -40,3 +40,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+#colab files
+llm_collab_brief.pdf
+DEV_B_PLAN.md
+CLAUDE_CODE_PROMPTS.md
