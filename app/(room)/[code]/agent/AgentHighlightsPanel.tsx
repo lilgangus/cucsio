@@ -6,6 +6,9 @@ import { Button } from "@/components/ui/button";
 import { useAgentActivity } from "@/lib/agent/agent-activity-context";
 import { cn } from "@/lib/utils";
 
+const PROCESS_FINDING_RE =
+  /\b(active context|branch|checking|citation|completes|displayed|grounded synthesis|session|status|target|tool|travers|verification|visual|workflow)\b/i;
+
 /**
  * Mirror of `HighlightsPanel`, but for the synthetic agent feed. The
  * agent autonomously pins items at the end of every traversal cycle.
@@ -13,8 +16,13 @@ import { cn } from "@/lib/utils";
  */
 export function AgentHighlightsPanel() {
   const { highlights, unpinHighlight, phase } = useAgentActivity();
+  const visibleHighlights = highlights.filter(
+    (h) =>
+      h.summary.trim().split(/\s+/).length >= 4 &&
+      !PROCESS_FINDING_RE.test(h.summary)
+  );
 
-  if (highlights.length === 0) {
+  if (visibleHighlights.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-muted-foreground">
         <div className="flex size-9 items-center justify-center rounded-2xl bg-violet-500/10 text-violet-600 dark:text-violet-300">
@@ -32,7 +40,7 @@ export function AgentHighlightsPanel() {
 
   return (
     <ul className="flex flex-col gap-2 p-3">
-      {highlights.map((h, i) => (
+      {visibleHighlights.map((h, i) => (
         <li key={h.id}>
           <div
             className={cn(

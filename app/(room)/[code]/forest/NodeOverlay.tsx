@@ -257,7 +257,7 @@ export function NodeOverlay(props: OverlayProps) {
     reset: resetAgentTimeline,
     start: startAgentTimeline,
   } = useAgentTimeline();
-  const { trigger: triggerAgent } = useAgentActivity();
+  const { trigger: triggerAgent, pinChatFindings } = useAgentActivity();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** Abort ongoing `/messages` fetch when the user closes the overlay or it unmounts. */
   const sendAbortRef = useRef<AbortController | null>(null);
@@ -353,30 +353,39 @@ export function NodeOverlay(props: OverlayProps) {
     setSending(true);
     resetAgentTimeline();
     startAgentTimeline();
+    const attachmentSummary = describeAttachments(attachments);
+    const agentContext = [
+      pendingTarget.trim()
+        ? `Pending session target: ${pendingTarget.trim()}`
+        : null,
+      sessionTargetDraft.trim()
+        ? `Session target: ${sessionTargetDraft.trim()}`
+        : null,
+      forkContext?.ancestorTargets.length
+        ? `Source branches: ${forkContext.ancestorTargets.join(" | ")}`
+        : null,
+      session?.smart_context
+        ? `Upstream context: ${session.smart_context.slice(0, 240)}`
+        : null,
+      attachments.length ? `User attachments: ${attachmentSummary}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    let assistantAnswer = "";
+    const onAgentEvent = (
+      event: import("@/lib/llm/agent-events").AgentEvent
+    ) => {
+      applyAgentEvent(event);
+      if (event.type === "delta" && event.phase === "synthesis") {
+        assistantAnswer += event.text;
+      }
+    };
     triggerAgent({
       reason: `chat query: "${text.slice(0, 80)}"`,
       source: "chat",
       targetPrompt:
-        text || `Uploaded ${describeAttachments(attachments).slice(0, 120)}`,
-      context: [
-        pendingTarget.trim()
-          ? `Pending session target: ${pendingTarget.trim()}`
-          : null,
-        sessionTargetDraft.trim()
-          ? `Session target: ${sessionTargetDraft.trim()}`
-          : null,
-        forkContext?.ancestorTargets.length
-          ? `Source branches: ${forkContext.ancestorTargets.join(" | ")}`
-          : null,
-        session?.smart_context
-          ? `Upstream context: ${session.smart_context.slice(0, 240)}`
-          : null,
-        attachments.length
-          ? `User attachments: ${describeAttachments(attachments)}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+        text || `Uploaded ${attachmentSummary.slice(0, 120)}`,
+      context: agentContext,
     });
     try {
       if (isPending && onSendNew) {
@@ -384,7 +393,7 @@ export function NodeOverlay(props: OverlayProps) {
           text,
           pendingTarget.trim() || undefined,
           {
-            onAgentEvent: applyAgentEvent,
+            onAgentEvent,
             signal: ac.signal,
           },
           attachments
@@ -394,8 +403,15 @@ export function NodeOverlay(props: OverlayProps) {
         // session id; nothing else for us to do here.
       } else if (sessionId) {
         await sendMessage(sessionId, { content: text, attachments }, {
-          onAgentEvent: applyAgentEvent,
+          onAgentEvent,
           signal: ac.signal,
+        });
+      }
+      if (assistantAnswer.trim()) {
+        void pinChatFindings({
+          userMessage: text || `Uploaded ${attachmentSummary}`,
+          assistantAnswer,
+          context: agentContext,
         });
       }
       setDraft("");
@@ -430,6 +446,7 @@ export function NodeOverlay(props: OverlayProps) {
     resetAgentTimeline,
     startAgentTimeline,
     triggerAgent,
+    pinChatFindings,
     clearAttachments,
   ]);
 

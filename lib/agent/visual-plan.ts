@@ -25,3 +25,13 @@ export type VisualAgentPlan = {
 export type VisualAgentPlanResponse = {
   plan: VisualAgentPlan;
 };
+
+export type AgentChatFindingsPayload = {
+  userMessage: string;
+  assistantAnswer: string;
+  context?: string;
+};
+
+export type AgentChatFindingsResponse = {
+  findings: VisualAgentFinding[];
+};

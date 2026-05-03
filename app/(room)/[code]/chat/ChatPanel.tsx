@@ -142,7 +142,7 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     reset: resetAgentTimeline,
     start: startAgentTimeline,
   } = useAgentTimeline();
-  const { trigger: triggerAgent } = useAgentActivity();
+  const { trigger: triggerAgent, pinChatFindings } = useAgentActivity();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
@@ -209,31 +209,44 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     setSending(true);
     resetAgentTimeline();
     startAgentTimeline();
+    const attachmentSummary = describeAttachments(attachments);
+    const agentContext = [
+      activeSession?.session_target
+        ? `Session target: ${activeSession.session_target}`
+        : null,
+      activeSession?.label ? `Session label: ${activeSession.label}` : null,
+      activeSession?.smart_context
+        ? `Upstream context: ${activeSession.smart_context.slice(0, 240)}`
+        : null,
+      attachments.length ? `User attachments: ${attachmentSummary}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    let assistantAnswer = "";
     triggerAgent({
       reason: `chat query: "${text.slice(0, 80)}"`,
       source: "chat",
       targetPrompt:
-        text || `Uploaded ${describeAttachments(attachments).slice(0, 120)}`,
-      context: [
-        activeSession?.session_target
-          ? `Session target: ${activeSession.session_target}`
-          : null,
-        activeSession?.label ? `Session label: ${activeSession.label}` : null,
-        activeSession?.smart_context
-          ? `Upstream context: ${activeSession.smart_context.slice(0, 240)}`
-          : null,
-        attachments.length
-          ? `User attachments: ${describeAttachments(attachments)}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+        text || `Uploaded ${attachmentSummary.slice(0, 120)}`,
+      context: agentContext,
     });
     try {
       await sendMessage(sessionId, { content: text, attachments }, {
-        onAgentEvent: applyAgentEvent,
+        onAgentEvent: (event) => {
+          applyAgentEvent(event);
+          if (event.type === "delta" && event.phase === "synthesis") {
+            assistantAnswer += event.text;
+          }
+        },
         signal: ac.signal,
       });
+      if (assistantAnswer.trim()) {
+        void pinChatFindings({
+          userMessage: text || `Uploaded ${attachmentSummary}`,
+          assistantAnswer,
+          context: agentContext,
+        });
+      }
       setDraft("");
       clearAttachments();
     } catch (err) {
@@ -263,6 +276,7 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     resetAgentTimeline,
     startAgentTimeline,
     triggerAgent,
+    pinChatFindings,
     clearAttachments,
   ]);
 

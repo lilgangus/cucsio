@@ -12,6 +12,8 @@ import {
 } from "react";
 
 import type {
+  AgentChatFindingsPayload,
+  AgentChatFindingsResponse,
   VisualAgentPlan,
   VisualAgentPlanResponse,
 } from "@/lib/agent/visual-plan";
@@ -64,6 +66,7 @@ type AgentActivityValue = {
   statusText: string;
   cycleCount: number;
   trigger: (t: AgentTrigger) => void;
+  pinChatFindings: (payload: AgentChatFindingsPayload) => Promise<void>;
   pinHighlight: (h: Omit<AgentHighlight, "id" | "createdAt">) => void;
   unpinHighlight: (id: string) => void;
 };
@@ -94,6 +97,15 @@ function shorten(value: string, max: number): string {
   const t = clean(value);
   if (t.length <= max) return t;
   return `${t.slice(0, Math.max(0, max - 3)).trim()}...`;
+}
+
+const PROCESS_FINDING_RE =
+  /\b(active context|branch|checking|citation|completes|displayed|grounded synthesis|session|status|target|tool|travers|verification|visual|workflow)\b/i;
+
+function isUsefulHighlight(summary: string): boolean {
+  const text = clean(summary);
+  if (!text || PROCESS_FINDING_RE.test(text)) return false;
+  return text.split(/\s+/).length >= 4;
 }
 
 function makeNode(args: {
@@ -201,6 +213,28 @@ async function requestLlmPlan(
   return payload.plan ?? null;
 }
 
+async function requestChatFindings(
+  payload: AgentChatFindingsPayload,
+  signal?: AbortSignal
+): Promise<AgentHighlight[]> {
+  const res = await fetch("/api/agent/findings", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ payload }),
+    signal,
+  });
+  if (!res.ok) return [];
+  const json = (await res.json()) as Partial<AgentChatFindingsResponse>;
+  return (json.findings ?? [])
+    .filter((f) => isUsefulHighlight(f.summary))
+    .map((finding, i) => ({
+      id: uid("h"),
+      summary: finding.summary,
+      sourceNodeId: null,
+      createdAt: Date.now() + i,
+    }));
+}
+
 export function AgentActivityProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<AgentPhase>("idle");
   const [nodes, setNodes] = useState<AgentNode[]>([]);
@@ -243,17 +277,26 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
         const plan = await requestLlmPlan(triggerForPlan, ac.signal);
         if (!plan || ac.signal.aborted || llmCycleRef.current !== cycle) {
           if (!ac.signal.aborted && llmCycleRef.current === cycle) {
-            setStatusText("Model did not return a content tree.");
+            setStatusText(
+              traversalNodesRef.current.length > 0
+                ? "Model did not return a new tree - keeping the last run visible."
+                : "Model did not return a content tree."
+            );
             timerRef.current = setTimeout(() => {
               setPhase("idle");
-              setStatusText("Agent idle - waiting for a target prompt.");
+              setStatusText(
+                traversalNodesRef.current.length > 0
+                  ? "Last agent tree remains visible."
+                  : "Agent idle - waiting for a target prompt."
+              );
             }, SETTLE_MS);
           }
           return;
         }
 
         const modelNodes = buildTreeFromPlan(plan);
-        const findings = findingsFromPlan(plan, modelNodes);
+        const findings =
+          triggerForPlan.source === "chat" ? [] : findingsFromPlan(plan, modelNodes);
         traversalNodesRef.current = modelNodes;
         visitQueueRef.current = modelNodes.map((n) => n.id);
         llmFindingsRef.current = findings;
@@ -267,10 +310,18 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         if (llmCycleRef.current !== cycle) return;
-        setStatusText("Model content tree failed before traversal.");
+        setStatusText(
+          traversalNodesRef.current.length > 0
+            ? "Model tree failed - keeping the last completed tree."
+            : "Model content tree failed before traversal."
+        );
         timerRef.current = setTimeout(() => {
           setPhase("idle");
-          setStatusText("Agent idle - waiting for a target prompt.");
+          setStatusText(
+            traversalNodesRef.current.length > 0
+              ? "Last agent tree remains visible."
+              : "Agent idle - waiting for a target prompt."
+          );
         }, SETTLE_MS);
       }
     })();
@@ -285,12 +336,14 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
         const cycle = llmCycleRef.current + 1;
         llmCycleRef.current = cycle;
         llmFindingsRef.current = [];
-        traversalNodesRef.current = [];
         visitQueueRef.current = [];
-        setNodes([]);
         setCursorNodeId(null);
         setPhase("spinning_up");
-        setStatusText("Nemotron is generating a content tree...");
+        setStatusText(
+          traversalNodesRef.current.length > 0
+            ? "Nemotron is generating a new tree - previous run stays pinned."
+            : "Nemotron is generating a content tree..."
+        );
         setCycleCount((c) => c + 1);
         startLlmPlan(action.trigger, cycle);
         return;
@@ -368,7 +421,7 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
             recurse({ kind: "spinup", trigger: queued });
           } else {
             setPhase("idle");
-            setStatusText("Agent idle - waiting for a target prompt.");
+            setStatusText("Run complete - agent tree remains visible.");
           }
         }, SETTLE_MS);
       }
@@ -400,6 +453,32 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       dispatch({ kind: "spinup", trigger: t });
     },
     [dispatch]
+  );
+
+  const pinChatFindings = useCallback(
+    async (payload: AgentChatFindingsPayload) => {
+      const ac = new AbortController();
+      try {
+        const nextBatch = await requestChatFindings(payload, ac.signal);
+        if (nextBatch.length === 0) return;
+        setHighlights((prev) => {
+          const seen = new Set(prev.map((h) => clean(h.summary).toLowerCase()));
+          const fresh = nextBatch.filter((h) => {
+            const key = clean(h.summary).toLowerCase();
+            if (!key || seen.has(key) || !isUsefulHighlight(h.summary)) {
+              return false;
+            }
+            seen.add(key);
+            return true;
+          });
+          return [...fresh, ...prev].slice(0, 6);
+        });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.warn("[agent] answer-grounded findings failed", err);
+      }
+    },
+    []
   );
 
   const pinHighlight = useCallback(
@@ -440,6 +519,7 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       cycleCount,
       trigger,
       pinHighlight,
+      pinChatFindings,
       unpinHighlight,
     }),
     [
@@ -451,6 +531,7 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       cycleCount,
       trigger,
       pinHighlight,
+      pinChatFindings,
       unpinHighlight,
     ]
   );

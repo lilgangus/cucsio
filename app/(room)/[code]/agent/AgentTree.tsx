@@ -347,7 +347,13 @@ export function AgentTree({ widthHint = 720 }: { widthHint?: number }) {
   );
 
   const cursorPos = cursorNodeId ? layout.positions[cursorNodeId] : null;
-  const phaseCopy = PHASE_COPY[phase];
+  const phaseCopy =
+    phase === "idle" && nodes.length > 0
+      ? {
+          label: "Run complete",
+          tone: "text-emerald-600 dark:text-emerald-300",
+        }
+      : PHASE_COPY[phase];
 
   return (
     <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
