@@ -125,7 +125,7 @@ export function RightPanel({ projectId }: Props) {
             </Card>
           </div>
         ) : (
-          <HighlightsPanel />
+          <HighlightsPanel projectId={projectId} />
         )}
       </div>
     </div>

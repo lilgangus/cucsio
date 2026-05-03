@@ -119,11 +119,10 @@ export async function POST(req: Request, ctx: Params) {
   const rawLabel = typeof body.label === "string" ? body.label.trim() : "";
   const rawTarget =
     typeof body.sessionTarget === "string" ? body.sessionTarget.trim() : "";
+  /** Never inherit the parent's target — empty client input uses a neutral default. */
   const sessionTarget =
-    rawTarget.length > 0
-      ? rawTarget.slice(0, 160)
-      : parentRow.session_target?.trim() || undefined;
-  /** Null until the first user message in the fork names it (messages route). */
+    rawTarget.length > 0 ? rawTarget.slice(0, 160) : "General exploration";
+  /** Null until the first user message names it (messages route). */
   const childLabel = rawLabel.length > 0 ? rawLabel.slice(0, 64) : null;
 
   const { data: child, error: childErr } = await supabase

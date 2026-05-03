@@ -18,6 +18,9 @@ import {
 } from "react";
 import { toast } from "sonner";
 
+import { AssistantStreamBubble } from "@/components/chat/AssistantStreamBubble";
+import { ChatBubble, type ChatBubbleSenderChip } from "@/components/chat/ChatBubble";
+import { SelectableMessage } from "@/components/highlight/SelectableMessage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -39,14 +42,12 @@ import {
 } from "./hooks";
 
 /** Collapsed label beside a user bubble (AGENTS collision rule: `#first4` of identity id). */
-type SenderChip = { label: string; color: string };
-
 function resolveSenderChip(
   userId: string,
   snippets: Record<string, MessageAuthorSnippet>,
   presence: PresenceState[],
   identity: Identity | null
-): SenderChip {
+): ChatBubbleSenderChip {
   if (identity?.clientId === userId) {
     return {
       label: `${identity.displayName}#${userId.slice(0, 4)}`,
@@ -90,6 +91,11 @@ function resolveSenderChip(
  * show "Alice is sending...".
  */
 
+/** Passed into `onSendNew` so first-send can wire the same streaming UX as normal sends. */
+export type AssistantStreamCallbacks = {
+  onAssistantDelta: (accumulated: string) => void;
+};
+
 export type OverlayProps = {
   session: SessionRow | null;
   /**
@@ -116,7 +122,8 @@ export type OverlayProps = {
   /** Async hook the parent provides for first-send creation flows. */
   onSendNew?: (
     content: string,
-    sessionTarget?: string
+    sessionTarget: string | undefined,
+    stream: AssistantStreamCallbacks
   ) => Promise<{ sessionId: string } | null>;
   /** Optional lineage/context box for a forked session or pending fork. */
   forkContext?: {
@@ -127,6 +134,9 @@ export type OverlayProps = {
   /** Open a different session in the overlay (used by "Branched from" links). */
   onOpenSession: (sessionId: string) => void;
   onClose: () => void;
+  /** Deep-link from highlights: scroll this message into view once loaded. */
+  scrollToMessageId?: string | null;
+  onScrollToMessageHandled?: () => void;
 };
 
 export function NodeOverlay(props: OverlayProps) {
@@ -143,6 +153,8 @@ export function NodeOverlay(props: OverlayProps) {
     onBranchOff,
     onOpenSession,
     onClose,
+    scrollToMessageId = null,
+    onScrollToMessageHandled,
   } = props;
 
   const sessionId = session?.id ?? null;
@@ -214,16 +226,19 @@ export function NodeOverlay(props: OverlayProps) {
   const sessionTargetFocusedRef = useRef(false);
   const sessionTargetLastWrittenRef = useRef("");
   const [sending, setSending] = useState(false);
+  /** `null` = idle; `""` = assistant streaming but no tokens yet; otherwise accumulated text. */
+  const [streamingAssistant, setStreamingAssistant] = useState<string | null>(
+    null
+  );
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // Reset optional target when entering a pending create/fork flow only.
+  // Do not read forkContext here: when sessions refresh, forkContext identity
+  // changes and used to re-fill the parent's target — wiping what the user typed.
   useEffect(() => {
     if (!isPending) return;
-    if (pendingMode === "new-fork") {
-      setPendingTarget(forkContext?.ancestorTargets[0] ?? "");
-      return;
-    }
     setPendingTarget("");
-  }, [isPending, pendingMode, forkContext]);
+  }, [isPending]);
 
   useEffect(() => {
     if (!session) return;
@@ -262,26 +277,41 @@ export function NodeOverlay(props: OverlayProps) {
     return () => cancelAnimationFrame(id);
   }, []);
 
+  /** Hide live stream bubble once the persisted assistant row (Realtime) matches streamed text. */
+  const showAssistantStream = useMemo(() => {
+    if (streamingAssistant === null) return false;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant") return true;
+    return last.content.trim() !== streamingAssistant.trim();
+  }, [messages, streamingAssistant]);
+
   const submit = useCallback(async () => {
     const text = draft.trim();
     if (!text || sending) return;
     if (lockedByOther) return;
 
     setSending(true);
+    setStreamingAssistant("");
     try {
       if (isPending && onSendNew) {
         const created = await onSendNew(
           text,
-          pendingTarget.trim() || undefined
+          pendingTarget.trim() || undefined,
+          {
+            onAssistantDelta: (acc) => setStreamingAssistant(acc),
+          }
         );
         if (!created) return;
         // The parent will swap our `target` to point at the new
         // session id; nothing else for us to do here.
       } else if (sessionId) {
-        await sendMessage(sessionId, { content: text });
+        await sendMessage(sessionId, { content: text }, {
+          onAssistantDelta: (acc) => setStreamingAssistant(acc),
+        });
       }
       setDraft("");
     } catch (err) {
+      setStreamingAssistant(null); // stop bubble on error
       const msg =
         err instanceof ApiError
           ? err.status === 409
@@ -320,7 +350,25 @@ export function NodeOverlay(props: OverlayProps) {
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+  }, [messages.length, streamingAssistant, showAssistantStream]);
+
+  useEffect(() => {
+    if (!scrollToMessageId || !sessionId) return;
+    const root = scrollerRef.current;
+    if (!root) return;
+    const el = root.querySelector(
+      `[data-message-id="${scrollToMessageId}"]`
+    );
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      onScrollToMessageHandled?.();
+    }
+  }, [
+    scrollToMessageId,
+    sessionId,
+    messages,
+    onScrollToMessageHandled,
+  ]);
 
   const inputDisabled = lockedByOther || sending;
 
@@ -467,23 +515,39 @@ export function NodeOverlay(props: OverlayProps) {
             <EmptyHint text="First send will create the new node." />
           ) : null}
 
-          {messages.map((m) => (
-            <ChatBubble
-              key={m.id}
-              role={m.role === "assistant" ? "assistant" : "user"}
-              content={m.content}
-              senderChip={
-                m.role === "user" && m.author_id
-                  ? resolveSenderChip(
-                      m.author_id,
-                      authorsByUserId,
-                      presence,
-                      identity
-                    )
-                  : null
+          {messages.map((m) => {
+            const bubble = (
+              <ChatBubble
+                role={m.role === "assistant" ? "assistant" : "user"}
+                content={m.content}
+                senderChip={
+                  m.role === "user" && m.author_id
+                    ? resolveSenderChip(
+                        m.author_id,
+                        authorsByUserId,
+                        presence,
+                        identity
+                      )
+                    : null
               }
-            />
-          ))}
+              />
+            );
+            return sessionId ? (
+              <SelectableMessage
+                key={m.id}
+                sessionId={sessionId}
+                messageId={m.id}
+              >
+                {bubble}
+              </SelectableMessage>
+            ) : (
+              <div key={m.id}>{bubble}</div>
+            );
+          })}
+
+          {showAssistantStream ? (
+            <AssistantStreamBubble text={streamingAssistant!} />
+          ) : null}
 
           {messagesLoading && messages.length === 0 && !isPending ? (
             <p className="text-center text-xs text-muted-foreground">
@@ -596,44 +660,6 @@ function PresenceChip({ others }: { others: PresenceState[] }) {
         </ul>
       </PopoverContent>
     </Popover>
-  );
-}
-
-function ChatBubble({
-  role,
-  content,
-  senderChip,
-}: {
-  role: "user" | "assistant";
-  content: string;
-  senderChip: SenderChip | null;
-}) {
-  const isUser = role === "user";
-  return (
-    <div className={cn("flex w-full flex-col gap-1", isUser ? "items-end" : "items-start")}>
-      {isUser && senderChip ? (
-        <span
-          className="flex items-center gap-1 px-1 text-[10px] text-muted-foreground"
-        >
-          <span
-            className="inline-block size-2 rounded-full"
-            style={{ background: senderChip.color }}
-            aria-hidden
-          />
-          <span>{senderChip.label}</span>
-        </span>
-      ) : null}
-      <div
-        className={cn(
-          "max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-          isUser
-            ? "bg-primary text-primary-foreground"
-            : "border border-border bg-muted text-foreground"
-        )}
-      >
-        {content}
-      </div>
-    </div>
   );
 }
 

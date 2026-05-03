@@ -20,6 +20,7 @@ import {
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 import { cn } from "@/lib/utils";
+import type { SessionRow } from "@/types/db";
 import {
   buildForestFromSessions,
   layoutForest,
@@ -59,7 +60,27 @@ export function ForestCanvas({ projectId }: Props) {
   const { sessions, loading, error } = useProjectSessions(projectId);
   const parentsBySession = useProjectParents(projectId);
   const [target, setTarget] = useState<OverlayTarget | null>(null);
-  const { setFocusedSessionId } = useSessionFocus();
+  /**
+   * After first send on a new tree / fork, the new row is not in
+   * `useProjectSessions` until the Realtime INSERT lands. Without this
+   * the overlay briefly got `session === null` → `sessionId` dropped,
+   * empty target field, and messages cleared.
+   */
+  const [sessionBootstrap, setSessionBootstrap] = useState<SessionRow | null>(
+    null
+  );
+  const { setFocusedSessionId, setOpenSessionChatImpl } = useSessionFocus();
+  const [highlightJumpMessageId, setHighlightJumpMessageId] = useState<
+    string | null
+  >(null);
+
+  useLayoutEffect(() => {
+    setOpenSessionChatImpl((sessionId, scrollToMessageId) => {
+      setTarget({ kind: "session", sessionId });
+      setHighlightJumpMessageId(scrollToMessageId ?? null);
+    });
+    return () => setOpenSessionChatImpl(null);
+  }, [setOpenSessionChatImpl]);
 
   /** Session channel we occupy for presence (`new-fork` stays on parent until fork exists). */
   const activePresenceSessionId =
@@ -124,9 +145,13 @@ export function ForestCanvas({ projectId }: Props) {
   // Actions ----------------------------------------------------------
 
   const startNewTree = () => setTarget({ kind: "new-tree" });
-  const closeOverlay = () => setTarget(null);
 
-  const branchOff = useCallback(async (parentSessionId: string) => {
+  const closeOverlay = () => {
+    setTarget(null);
+    setSessionBootstrap(null);
+  };
+
+  const branchOff = useCallback((parentSessionId: string) => {
     setTarget({ kind: "new-fork", parentSessionId });
   }, []);
 
@@ -141,25 +166,42 @@ export function ForestCanvas({ projectId }: Props) {
   const handleFirstSend = useCallback(
     async (
       content: string,
-      sessionTarget?: string
+      sessionTarget: string | undefined,
+      stream: { onAssistantDelta: (accumulated: string) => void }
     ): Promise<{ sessionId: string } | null> => {
       if (!target) return null;
       try {
         if (target.kind === "new-tree") {
-          const { session } = await createSession({ projectId, sessionTarget });
-          await sendMessage(session.id, { content });
+          const { session } = await createSession({
+            projectId,
+            sessionTarget,
+          });
+          await sendMessage(session.id, { content }, {
+            onAssistantDelta: stream.onAssistantDelta,
+          });
+          setSessionBootstrap(session);
           setTarget({ kind: "session", sessionId: session.id });
           return { sessionId: session.id };
         }
         if (target.kind === "new-fork") {
-          const { session } = await forkSession(target.parentSessionId, { sessionTarget });
-          await sendMessage(session.id, { content });
+          const { session } = await forkSession(target.parentSessionId, {
+            sessionTarget,
+          });
+          await sendMessage(session.id, { content }, {
+            onAssistantDelta: stream.onAssistantDelta,
+          });
+          setSessionBootstrap(session);
           setTarget({ kind: "session", sessionId: session.id });
           return { sessionId: session.id };
         }
         if (target.kind === "new-combine") {
-          const { session } = await combineContexts({ parentIds: target.parentSessionIds });
-          await sendMessage(session.id, { content });
+          const { session } = await combineContexts({
+            parentIds: target.parentSessionIds,
+          });
+          await sendMessage(session.id, { content }, {
+            onAssistantDelta: stream.onAssistantDelta,
+          });
+          setSessionBootstrap(session);
           setTarget({ kind: "session", sessionId: session.id });
           return { sessionId: session.id };
         }
@@ -176,8 +218,26 @@ export function ForestCanvas({ projectId }: Props) {
   // Resolve the overlay's session row from the live sessions list.
   const targetSession = useMemo(() => {
     if (target?.kind !== "session") return null;
-    return sessions.find((s) => s.id === target.sessionId) ?? null;
-  }, [target, sessions]);
+    const fromList = sessions.find((s) => s.id === target.sessionId);
+    if (fromList) return fromList;
+    if (sessionBootstrap?.id === target.sessionId) return sessionBootstrap;
+    return null;
+  }, [target, sessions, sessionBootstrap]);
+
+  useEffect(() => {
+    if (!sessionBootstrap) return;
+    if (!target || target.kind !== "session") {
+      setSessionBootstrap(null);
+      return;
+    }
+    if (target.sessionId !== sessionBootstrap.id) {
+      setSessionBootstrap(null);
+      return;
+    }
+    if (sessions.some((s) => s.id === target.sessionId)) {
+      setSessionBootstrap(null);
+    }
+  }, [target, sessions, sessionBootstrap]);
 
   const sessionsById = useMemo(
     () => new Map(sessions.map((s) => [s.id, s] as const)),
@@ -377,6 +437,8 @@ export function ForestCanvas({ projectId }: Props) {
             setTarget({ kind: "session", sessionId })
           }
           onClose={closeOverlay}
+          scrollToMessageId={highlightJumpMessageId}
+          onScrollToMessageHandled={() => setHighlightJumpMessageId(null)}
         />
       ) : null}
     </section>
