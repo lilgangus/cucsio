@@ -18,6 +18,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 
+import { ChatSession } from "@/components/chat";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -30,8 +31,6 @@ import { loadIdentity, type Identity } from "@/lib/identity";
 import type { PresenceState } from "@/lib/realtime/channels";
 import { cn } from "@/lib/utils";
 import type { MessageRow, SessionRow } from "@/types/db";
-
-import { useSessionMessages } from "./hooks";
 
 /**
  * The "popped-up" view of one chat session. Three modes (driven by the
@@ -52,6 +51,7 @@ import { useSessionMessages } from "./hooks";
 
 export type OverlayProps = {
   session: SessionRow | null;
+  projectId: string;
   /**
    * Live presence list for this session, supplied by the canvas. The
    * canvas owns the per-session Realtime channels (see `hooks.ts` for
@@ -65,6 +65,12 @@ export type OverlayProps = {
   pendingMode?: "new-tree" | "new-fork";
   /** Async hook the parent provides for first-send creation flows. */
   onSendNew?: (content: string) => Promise<{ sessionId: string } | null>;
+  initialScrollTarget?: {
+    sessionId: string;
+    messageId: string;
+    snippet?: string;
+  } | null;
+  onScrollHandled?: () => void;
   onBranchOff: () => void;
   onClose: () => void;
 };
@@ -72,31 +78,20 @@ export type OverlayProps = {
 export function NodeOverlay(props: OverlayProps) {
   const {
     session,
+    projectId,
     presence,
     prefetchedMessages,
     isPending,
     pendingMode,
     onSendNew,
+    initialScrollTarget,
+    onScrollHandled,
     onBranchOff,
     onClose,
   } = props;
 
   const sessionId = session?.id ?? null;
-
-  // Live messages still come from this component (no channel-dedup
-  // risk: the messages hook uses a `session-messages:<id>` topic that
-  // no other hook subscribes to).
-  const { messages: liveMessages, loading: messagesLoading } =
-    useSessionMessages(sessionId);
-
-  const messages = useMemo(() => {
-    // Prefer live data once it arrives. Until then show whatever
-    // history the parent passed in (e.g. for a freshly-forked session).
-    if (sessionId && (liveMessages.length > 0 || !messagesLoading)) {
-      return liveMessages;
-    }
-    return prefetchedMessages ?? [];
-  }, [sessionId, liveMessages, messagesLoading, prefetchedMessages]);
+  const messages = prefetchedMessages ?? [];
 
   // Identity / presence filtering --------------------------------------
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -106,6 +101,28 @@ export function NodeOverlay(props: OverlayProps) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIdentity(loadIdentity());
   }, []);
+
+  useEffect(() => {
+    if (
+      isPending ||
+      !sessionId ||
+      !initialScrollTarget ||
+      initialScrollTarget.sessionId !== sessionId
+    ) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("cucsio:scroll-to-message", {
+          detail: initialScrollTarget,
+        })
+      );
+      onScrollHandled?.();
+    }, 60);
+
+    return () => window.clearTimeout(timer);
+  }, [initialScrollTarget, isPending, onScrollHandled, sessionId]);
 
   const others = useMemo(
     () => presence.filter((p) => p.clientId !== identity?.clientId),
@@ -188,7 +205,7 @@ export function NodeOverlay(props: OverlayProps) {
         ? "Branch off — first message starts the new node"
         : session?.label?.trim() || (session?.parent_session_id ? "Fork" : "Main chat");
 
-  const canBranch = !isPending && messages.length > 0;
+  const canBranch = !isPending && (session?.message_count ?? 0) > 0;
 
   return (
     <div
@@ -243,37 +260,42 @@ export function NodeOverlay(props: OverlayProps) {
           ref={scrollerRef}
           className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-5"
         >
-          {pendingMode === "new-tree" && messages.length === 0 ? (
-            <EmptyHint
-              text="Send the first message to plant this tree."
-            />
-          ) : pendingMode === "new-fork" && messages.length === 0 ? (
-            <EmptyHint
-              text="Branching... first send will create the fork."
-            />
-          ) : null}
+          {isPending ? (
+            <>
+              {pendingMode === "new-tree" && messages.length === 0 ? (
+                <EmptyHint text="Send the first message to plant this tree." />
+              ) : pendingMode === "new-fork" && messages.length === 0 ? (
+                <EmptyHint text="Branching... first send will create the fork." />
+              ) : null}
 
-          {messages.map((m) => (
-            <ChatBubble
-              key={m.id}
-              role={m.role === "assistant" ? "assistant" : "user"}
-              content={m.content}
-              author={
-                m.author_id
-                  ? presence.find((p) => p.clientId === m.author_id) ?? null
-                  : null
-              }
-            />
-          ))}
-
-          {messagesLoading && messages.length === 0 && !isPending ? (
-            <p className="text-center text-xs text-muted-foreground">
-              Loading messages…
-            </p>
-          ) : null}
+              {messages.map((m) => (
+                <ChatBubble
+                  key={m.id}
+                  role={m.role === "assistant" ? "assistant" : "user"}
+                  content={m.content}
+                  author={
+                    m.author_id
+                      ? presence.find((p) => p.clientId === m.author_id) ?? null
+                      : null
+                  }
+                />
+              ))}
+            </>
+          ) : session && identity ? (
+            <div className="-mx-5 -my-5 flex min-h-0 flex-1 flex-col">
+              <ChatSession
+                key={session.id}
+                sessionId={session.id}
+                projectId={session.project_id || projectId}
+                identity={identity}
+              />
+            </div>
+          ) : (
+            <EmptyHint text="Reload the room to restore your local identity." />
+          )}
         </div>
 
-        {lockedByOther ? (
+        {isPending && lockedByOther ? (
           <div className="flex items-center gap-2 border-t border-amber-500/30 bg-amber-500/10 px-5 py-2 text-xs text-amber-700 dark:text-amber-300">
             <LockIcon className="size-3.5" />
             <span>
@@ -285,37 +307,37 @@ export function NodeOverlay(props: OverlayProps) {
           </div>
         ) : null}
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
-          }}
-          className="flex items-end gap-2 border-t border-border bg-card/80 px-5 py-3"
-        >
-          <Textarea
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKeyDown}
-            disabled={inputDisabled}
-            placeholder={
-              lockedByOther
-                ? "Waiting for the current reply..."
-                : isPending
-                  ? "Type the first message..."
-                  : "Continue this chat..."
-            }
-            rows={2}
-            className="resize-none"
-          />
-          <Button
-            type="submit"
-            disabled={inputDisabled || draft.trim().length === 0}
+        {isPending ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit();
+            }}
+            className="flex items-end gap-2 border-t border-border bg-card/80 px-5 py-3"
           >
-            {sending ? "Sending…" : "Send"}
-            <ArrowDownIcon className="rotate-[-90deg]" />
-          </Button>
-        </form>
+            <Textarea
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKeyDown}
+              disabled={inputDisabled}
+              placeholder={
+                lockedByOther
+                  ? "Waiting for the current reply..."
+                  : "Type the first message..."
+              }
+              rows={2}
+              className="resize-none"
+            />
+            <Button
+              type="submit"
+              disabled={inputDisabled || draft.trim().length === 0}
+            >
+              {sending ? "Sending…" : "Send"}
+              <ArrowDownIcon className="rotate-[-90deg]" />
+            </Button>
+          </form>
+        ) : null}
       </div>
     </div>
   );

@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { CLIENT_ID_HEADER } from "@/lib/identity";
 import {
+  PROJECT_BROADCAST_EVENT,
   SESSION_BROADCAST_EVENT,
+  projectChannel,
   sessionChannel,
+  type ProjectEvent,
   type SessionEvent,
 } from "@/lib/realtime/channels";
 import { getSupabaseServer } from "@/lib/supabase/server";
-import type { MessageRow } from "@/types/db";
+import type { MessageRow, SessionRow } from "@/types/db";
 
 const ASSISTANT_REPLY =
   "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed non dui eget nunc congue pulvinar. " +
@@ -14,6 +17,8 @@ const ASSISTANT_REPLY =
   "Curabitur finibus orci ut erat dapibus, vitae volutpat ligula faucibus. Integer et porta justo. " +
   "Suspendisse potenti. Praesent euismod, augue in faucibus blandit, tortor orci posuere velit, " +
   "vitae cursus velit ipsum vel orci.";
+
+const burstTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -45,14 +50,88 @@ async function broadcastSessionEvent(sessionId: string, event: SessionEvent) {
   }
 }
 
-async function runAssistantBurst(sessionId: string) {
+async function broadcastProjectEvent(projectId: string, event: ProjectEvent) {
+  const supabase = getSupabaseServer();
+  const channel = supabase.channel(projectChannel(projectId));
+
+  try {
+    await channel.send({
+      type: "broadcast",
+      event: PROJECT_BROADCAST_EVENT,
+      payload: event,
+    });
+  } finally {
+    void supabase.removeChannel(channel);
+  }
+}
+
+async function syncSessionMetadata(
+  sessionId: string,
+  projectId: string,
+  patch: Partial<Pick<SessionRow, "pending_user_id" | "pending_since">> = {}
+) {
+  const supabase = getSupabaseServer();
+  const now = new Date().toISOString();
+  const { count, error: countError } = await supabase
+    .from("messages")
+    .select("*", { count: "exact", head: true })
+    .eq("session_id", sessionId)
+    .eq("is_deleted", false);
+
+  if (countError) {
+    throw countError;
+  }
+
+  const { data: session, error: updateError } = await supabase
+    .from("sessions")
+    .update({
+      message_count: count ?? 0,
+      last_activity_at: now,
+      updated_at: now,
+      ...patch,
+    })
+    .eq("id", sessionId)
+    .select("id, label, summary, last_activity_at, message_count")
+    .single<Pick<
+      SessionRow,
+      "id" | "label" | "summary" | "last_activity_at" | "message_count"
+    >>();
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  await broadcastProjectEvent(projectId, {
+    type: "session_updated",
+    session,
+  });
+}
+
+async function trySyncSessionMetadata(
+  sessionId: string,
+  projectId: string,
+  patch: Partial<Pick<SessionRow, "pending_user_id" | "pending_since">> = {}
+) {
+  try {
+    await syncSessionMetadata(sessionId, projectId, patch);
+  } catch (error) {
+    console.warn("[/api/messages] session metadata sync failed", error);
+  }
+}
+
+async function runAssistantBurst(sessionId: string, projectId: string) {
   const supabase = getSupabaseServer();
   const tmpId = crypto.randomUUID();
   const chunks = splitIntoChunks(ASSISTANT_REPLY, 12);
 
-  try {
-    await sleep(500);
+  // Temp mock-route limitation: broadcast chunks in raw arrival order.
+  // Swapping two sends on purpose lets the client tolerate mild
+  // out-of-order delivery without trying to re-sequence tmpId streams.
+  if (chunks.length > 3) {
+    [chunks[2], chunks[3]] = [chunks[3], chunks[2]];
+  }
 
+  try {
     for (const chunk of chunks) {
       await broadcastSessionEvent(sessionId, {
         type: "assistant_chunk",
@@ -83,6 +162,10 @@ async function runAssistantBurst(sessionId: string) {
       type: "assistant_done",
       message: assistantRow,
     });
+    await trySyncSessionMetadata(sessionId, projectId, {
+      pending_user_id: null,
+      pending_since: null,
+    });
   } catch (error) {
     await broadcastSessionEvent(sessionId, {
       type: "stream_error",
@@ -90,7 +173,25 @@ async function runAssistantBurst(sessionId: string) {
       tmpId,
       error: error instanceof Error ? error.message : "Unknown stream failure",
     });
+    await trySyncSessionMetadata(sessionId, projectId, {
+      pending_user_id: null,
+      pending_since: null,
+    });
   }
+}
+
+function scheduleAssistantBurst(sessionId: string, projectId: string) {
+  const existingTimer = burstTimers.get(sessionId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
+    burstTimers.delete(sessionId);
+    void runAssistantBurst(sessionId, projectId);
+  }, 500);
+
+  burstTimers.set(sessionId, timer);
 }
 
 // TODO: REMOVE WHEN DEV A SHIPS THE REAL ROUTE
@@ -122,6 +223,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "user_not_found" }, { status: 404 });
   }
 
+  const { data: session, error: sessionError } = await supabase
+    .from("sessions")
+    .select("id, project_id")
+    .eq("id", sessionId)
+    .maybeSingle<{ id: string; project_id: string }>();
+
+  if (sessionError) {
+    return NextResponse.json({ error: "session_lookup_failed" }, { status: 500 });
+  }
+
+  if (!session) {
+    return NextResponse.json({ error: "session_not_found" }, { status: 404 });
+  }
+
   const { data: userRow, error: insertError } = await supabase
     .from("messages")
     .insert({
@@ -142,8 +257,12 @@ export async function POST(request: Request) {
     type: "user_msg",
     message: userRow,
   });
+  await trySyncSessionMetadata(sessionId, session.project_id, {
+    pending_user_id: user.id,
+    pending_since: new Date().toISOString(),
+  });
 
-  void runAssistantBurst(sessionId);
+  scheduleAssistantBurst(sessionId, session.project_id);
 
   return new NextResponse(null, { status: 202 });
 }

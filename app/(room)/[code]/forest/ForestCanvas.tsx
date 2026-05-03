@@ -57,9 +57,17 @@ type Props = {
   projectId: string;
 };
 
+type ScrollToMessageDetail = {
+  sessionId: string;
+  messageId: string;
+  snippet?: string;
+};
+
 export function ForestCanvas({ projectId }: Props) {
   const { sessions, loading, error } = useProjectSessions(projectId);
   const [target, setTarget] = useState<OverlayTarget | null>(null);
+  const [pendingScrollTarget, setPendingScrollTarget] =
+    useState<ScrollToMessageDetail | null>(null);
 
   // History captured at the moment Branch Off is clicked, so the
   // overlay can render the parent's messages while the fork API is
@@ -105,6 +113,7 @@ export function ForestCanvas({ projectId }: Props) {
   const closeOverlay = () => {
     setTarget(null);
     setPendingForkHistory([]);
+    setPendingScrollTarget(null);
   };
 
   const branchOff = useCallback(
@@ -165,6 +174,24 @@ export function ForestCanvas({ projectId }: Props) {
     if (target?.kind !== "session") return null;
     return sessions.find((s) => s.id === target.sessionId) ?? null;
   }, [target, sessions]);
+
+  useEffect(() => {
+    const handleScrollToMessage = (event: Event) => {
+      const detail = (event as CustomEvent<ScrollToMessageDetail>).detail;
+      if (!detail?.sessionId) return;
+
+      if (target?.kind === "session" && target.sessionId === detail.sessionId) {
+        return;
+      }
+
+      setPendingScrollTarget(detail);
+      setTarget({ kind: "session", sessionId: detail.sessionId });
+    };
+
+    window.addEventListener("cucsio:scroll-to-message", handleScrollToMessage);
+    return () =>
+      window.removeEventListener("cucsio:scroll-to-message", handleScrollToMessage);
+  }, [target]);
 
   // Render -----------------------------------------------------------
 
@@ -246,7 +273,10 @@ export function ForestCanvas({ projectId }: Props) {
                 ? "new-fork"
                 : undefined
           }
+          projectId={projectId}
+          initialScrollTarget={pendingScrollTarget}
           onSendNew={handleFirstSend}
+          onScrollHandled={() => setPendingScrollTarget(null)}
           onBranchOff={() => {
             if (target.kind === "session") void branchOff(target.sessionId);
           }}

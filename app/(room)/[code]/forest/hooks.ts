@@ -267,7 +267,11 @@ export function useForestPresence({
     // Add channels for newly-discovered sessions.
     for (const id of sessionIds) {
       if (have.has(id)) continue;
-      const ch = supabase.channel(sessionChannel(id), {
+      // Use a dedicated topic so this channel never collides with the
+      // session broadcast+postgres_changes channel in useChatSession.
+      // supabase.channel() reuses an existing channel by topic; calling
+      // .on("postgres_changes") on an already-subscribed channel throws.
+      const ch = supabase.channel(`presence:${id}`, {
         config: {
           presence: {
             key: identity?.clientId ?? `anon-${crypto.randomUUID()}`,

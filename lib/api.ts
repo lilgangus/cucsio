@@ -6,7 +6,6 @@ import {
   type Identity,
 } from "@/lib/identity";
 import type {
-  MessageRow,
   ProjectRow,
   SessionRow,
   UserRow,
@@ -154,22 +153,17 @@ export function forkSession(
 
 export type SendMessageBody = { content: string };
 
-export type SendMessageResponse = {
-  user: MessageRow;
-  assistant: MessageRow;
-};
-
 /**
- * Send one message in a session. The server holds the session-wide
- * "currently sending" lock for the whole roundtrip; this throws an
- * `ApiError` with `status === 409` if someone else is mid-turn.
+ * Send one message into the shared session stream. The temp room-chat
+ * transport still posts to `/api/messages` so every tab can pick up
+ * `user_msg`, `assistant_chunk`, and `assistant_done` broadcast events.
  */
 export function sendMessage(
   sessionId: string,
   body: SendMessageBody
-): Promise<SendMessageResponse> {
-  return postJSON<SendMessageResponse>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-    body
-  );
+): Promise<void> {
+  return postJSON<void>("/api/messages", {
+    sessionId,
+    content: body.content,
+  });
 }

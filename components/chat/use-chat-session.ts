@@ -37,6 +37,16 @@ function upsertMessage(rows: MessageRow[], incoming: MessageRow): MessageRow[] {
   );
 }
 
+function latestAssistantTimestamp(rows: MessageRow[]): number | null {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index]?.role === "assistant") {
+      return new Date(rows[index].created_at).getTime();
+    }
+  }
+
+  return null;
+}
+
 export function useChatSessionCtx(): UseChatSession {
   const ctx = useContext(ChatSessionContext);
   if (!ctx) {
@@ -74,9 +84,27 @@ export function useChatSession(sessionId: string, identity: Identity): UseChatSe
       throw fetchError;
     }
 
-    setMessages(data ?? []);
+    const nextMessages = (data ?? []) as MessageRow[];
+
+    setMessages(nextMessages);
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const latestAssistantAt = latestAssistantTimestamp(nextMessages);
+      if (
+        latestAssistantAt !== null &&
+        latestAssistantAt >= new Date(current.startedAt).getTime()
+      ) {
+        clearDraftReconcileTimer();
+        return null;
+      }
+
+      return current;
+    });
     setError(null);
-  }, [sessionId]);
+  }, [clearDraftReconcileTimer, sessionId]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -114,6 +142,10 @@ export function useChatSession(sessionId: string, identity: Identity): UseChatSe
             clearDraftReconcileTimer();
             setError(null);
             setDraft((current) => {
+              // We intentionally append chunks in arrival order. The temp
+              // mock route may deliver two deltas slightly out of sequence;
+              // the resulting text can look a little odd mid-stream, but the
+              // final assistant row from Postgres is still authoritative.
               if (current && current.tmpId === event.tmpId) {
                 return { ...current, content: current.content + event.delta };
               }
@@ -159,6 +191,32 @@ export function useChatSession(sessionId: string, identity: Identity): UseChatSe
             setDraft(null);
           }
         }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "messages",
+          filter: `session_id=eq.${sessionId}`,
+        },
+        ({ new: row }) => {
+          const message = row as MessageRow;
+
+          if (message.is_deleted) {
+            setMessages((current) =>
+              current.filter((existing) => existing.id !== message.id)
+            );
+            return;
+          }
+
+          setMessages((current) => upsertMessage(current, message));
+
+          if (message.role === "assistant") {
+            clearDraftReconcileTimer();
+            setDraft(null);
+          }
+        }
       );
 
     channel.subscribe((status) => {
@@ -169,7 +227,17 @@ export function useChatSession(sessionId: string, identity: Identity): UseChatSe
 
     return () => {
       clearDraftReconcileTimer();
-      void supabase.removeChannel(channel);
+      void supabase.removeChannel(channel).then((status) => {
+        const stillRegistered = supabase
+          .getChannels()
+          .some((candidate) => candidate.topic === channel.topic);
+
+        console.assert(
+          status === "ok" && !stillRegistered,
+          "[useChatSession] expected realtime channel to be removed on cleanup",
+          { sessionId, status, stillRegistered }
+        );
+      });
     };
   }, [clearDraftReconcileTimer, refresh, sessionId]);
 
