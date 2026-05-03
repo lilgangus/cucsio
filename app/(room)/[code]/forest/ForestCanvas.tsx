@@ -47,6 +47,15 @@ import type { LaidOutEdge, NodePosition, OverlayTarget } from "./types";
 
 const FOREST_PADDING = 56;
 
+/** Card + overlay labels: prefer authored purpose over auto labels ("Main fork fork"). */
+function sessionDisplayName(row: SessionRow): string {
+  const target = row.session_target?.trim();
+  if (target) return target.length > 56 ? `${target.slice(0, 56)}…` : target;
+  const label = row.label?.trim();
+  if (label) return label.length > 56 ? `${label.slice(0, 56)}…` : label;
+  return `Session ${row.id.slice(0, 8)}`;
+}
+
 type Props = {
   projectId: string;
 };
@@ -167,7 +176,10 @@ export function ForestCanvas({ projectId }: Props) {
     async (
       content: string,
       sessionTarget: string | undefined,
-      stream: { onAssistantDelta: (accumulated: string) => void }
+      stream: {
+        onAssistantDelta: (accumulated: string) => void;
+        signal?: AbortSignal;
+      }
     ): Promise<{ sessionId: string } | null> => {
       if (!target) return null;
       try {
@@ -178,6 +190,7 @@ export function ForestCanvas({ projectId }: Props) {
           });
           await sendMessage(session.id, { content }, {
             onAssistantDelta: stream.onAssistantDelta,
+            signal: stream.signal,
           });
           setSessionBootstrap(session);
           setTarget({ kind: "session", sessionId: session.id });
@@ -189,6 +202,7 @@ export function ForestCanvas({ projectId }: Props) {
           });
           await sendMessage(session.id, { content }, {
             onAssistantDelta: stream.onAssistantDelta,
+            signal: stream.signal,
           });
           setSessionBootstrap(session);
           setTarget({ kind: "session", sessionId: session.id });
@@ -200,12 +214,17 @@ export function ForestCanvas({ projectId }: Props) {
           });
           await sendMessage(session.id, { content }, {
             onAssistantDelta: stream.onAssistantDelta,
+            signal: stream.signal,
           });
           setSessionBootstrap(session);
           setTarget({ kind: "session", sessionId: session.id });
           return { sessionId: session.id };
         }
       } catch (err) {
+        const aborted =
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError");
+        if (aborted) return null;
         const msg = err instanceof ApiError ? err.message : "Could not start chat";
         toast.error(msg);
         return null;
@@ -254,11 +273,7 @@ export function ForestCanvas({ projectId }: Props) {
       while (cursorId && guard < 8) {
         const row = sessionsById.get(cursorId);
         if (!row) break;
-        const t =
-          row.session_target?.trim() ||
-          row.label?.trim() ||
-          `Session ${row.id.slice(0, 6)}`;
-        targets.push(t);
+        targets.push(sessionDisplayName(row));
         if (!inheritedSummary && row.summary.trim().length > 0) {
           inheritedSummary = row.summary;
         }
@@ -271,21 +286,55 @@ export function ForestCanvas({ projectId }: Props) {
     [sessionsById]
   );
 
+  const buildCombineContext = useCallback(
+    (parentIds: string[]): ForkContext | null => {
+      if (parentIds.length === 0) return null;
+      const names: string[] = [];
+      let inheritedSummary: string | null = null;
+      for (const id of parentIds) {
+        const row = sessionsById.get(id);
+        if (!row) continue;
+        names.push(sessionDisplayName(row));
+        if (!inheritedSummary && row.summary?.trim()) {
+          inheritedSummary = row.summary.trim();
+        }
+      }
+      if (names.length === 0) return null;
+      return { ancestorTargets: names, inheritedSummary };
+    },
+    [sessionsById]
+  );
+
   const forkContext = useMemo(() => {
     if (target?.kind === "new-fork") {
       return buildForkContext(target.parentSessionId);
     }
-    if (target?.kind === "session" && targetSession?.parent_session_id) {
-      return buildForkContext(targetSession.parent_session_id);
+    if (target?.kind === "new-combine") {
+      return buildCombineContext(target.parentSessionIds);
+    }
+    if (target?.kind === "session" && targetSession) {
+      const joinParents = parentsBySession[targetSession.id] ?? [];
+      if (joinParents.length > 1) {
+        return buildCombineContext(joinParents);
+      }
+      if (targetSession.parent_session_id) {
+        return buildForkContext(targetSession.parent_session_id);
+      }
     }
     return null;
-  }, [target, targetSession, buildForkContext]);
+  }, [
+    target,
+    targetSession,
+    buildForkContext,
+    buildCombineContext,
+    parentsBySession,
+  ]);
 
-  // Map of session_id → label for the "Branched from" breadcrumb.
+  /** Display names for lineage / "Sources" chips (session_target-first). */
   const sessionLabels = useMemo(() => {
     const m: Record<string, string> = {};
     for (const s of sessions) {
-      m[s.id] = s.label?.trim() || (s.parent_session_id ? "Fork" : "Main");
+      m[s.id] = sessionDisplayName(s);
     }
     return m;
   }, [sessions]);

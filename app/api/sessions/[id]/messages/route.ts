@@ -30,7 +30,8 @@ type Params = { params: Promise<{ id: string }> };
  *      `text/plain` chunks. Persist the full assistant row + bump counters in
  *      `onFinish`, then release the lock. `onError` also releases the lock.
  *
- * The client must read the stream to completion so `onFinish` runs.
+ * If the client disconnects before the stream finishes, `onFinish` may never
+ * run — always listen on `req.signal` so we clear `pending_user_id`.
  */
 export async function POST(req: Request, ctx: Params) {
   const clientId = getClientId(req);
@@ -117,6 +118,11 @@ export async function POST(req: Request, ctx: Params) {
       .eq("pending_user_id", clientId);
   };
 
+  const onClientGone = () => {
+    void releaseLock();
+  };
+  req.signal.addEventListener("abort", onClientGone);
+
   try {
     const { count: priorUserCount, error: countErr } = await supabase
       .from("messages")
@@ -164,6 +170,9 @@ export async function POST(req: Request, ctx: Params) {
       };
       if (!(session.session_target ?? "").trim()) {
         metaPatch.session_target = branchTitle;
+      }
+      if (!(session.summary ?? "").trim()) {
+        metaPatch.summary = previewFromFirstUserMessage(content);
       }
       await supabase.from("sessions").update(metaPatch).eq("id", sessionId);
     }
@@ -271,4 +280,15 @@ function labelFromFirstUserMessage(content: string): string {
   const line = content.replace(/\s+/g, " ").trim();
   if (!line.length) return "Untitled";
   return line.slice(0, 64);
+}
+
+/**
+ * Fills `sessions.summary` for the forest node card until a real LLM summary
+ * exists (see `/api/summarize`). Uses the first user turn — the same text
+ * that started the model call for this session.
+ */
+function previewFromFirstUserMessage(content: string, maxLen = 200): string {
+  const line = content.replace(/\s+/g, " ").trim();
+  if (!line.length) return "Conversation started";
+  return line.length > maxLen ? `${line.slice(0, maxLen - 1)}…` : line;
 }

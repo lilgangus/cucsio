@@ -32,6 +32,13 @@ type Props = {
   projectId: string;
 };
 
+function isSendAbortError(e: unknown): boolean {
+  return (
+    (e instanceof DOMException && e.name === "AbortError") ||
+    (e instanceof Error && e.name === "AbortError")
+  );
+}
+
 function resolveSenderChip(
   userId: string,
   snippets: Record<string, MessageAuthorSnippet>,
@@ -120,6 +127,16 @@ export function ChatPanel({ roomCode, projectId }: Props) {
   );
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const sendAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => sendAbortRef.current?.abort();
+  }, []);
+
+  /** Changing session while a stream is in flight must release the server lock. */
+  useEffect(() => {
+    sendAbortRef.current?.abort();
+  }, [sessionId]);
 
   const showAssistantStream = useMemo(() => {
     if (streamingAssistant === null) return false;
@@ -150,15 +167,20 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     if (!text || sending || !sessionId) return;
     if (lockedByOther) return;
 
+    sendAbortRef.current?.abort();
+    const ac = new AbortController();
+    sendAbortRef.current = ac;
     setSending(true);
     setStreamingAssistant("");
     try {
       await sendMessage(sessionId, { content: text }, {
         onAssistantDelta: (acc) => setStreamingAssistant(acc),
+        signal: ac.signal,
       });
       setDraft("");
     } catch (err) {
       setStreamingAssistant(null);
+      if (isSendAbortError(err)) return;
       const msg =
         err instanceof ApiError
           ? err.status === 409
@@ -169,6 +191,7 @@ export function ChatPanel({ roomCode, projectId }: Props) {
           : "Could not send";
       toast.error(msg);
     } finally {
+      if (sendAbortRef.current === ac) sendAbortRef.current = null;
       setSending(false);
     }
   }, [draft, sending, sessionId, lockedByOther]);

@@ -153,6 +153,8 @@ export type SendMessageBody = { content: string };
 export type SendMessageOptions = {
   /** Fires as assistant tokens arrive (`text/plain` stream body). */
   onAssistantDelta?: (accumulatedText: string) => void;
+  /** Abort to cancel the stream (e.g. user closed chat); server clears session lock. */
+  signal?: AbortSignal;
 };
 
 /**
@@ -176,6 +178,7 @@ export async function sendMessage(
         ...(id ? { [CLIENT_ID_HEADER]: id.clientId } : {}),
       },
       body: JSON.stringify(body),
+      signal: options?.signal,
     }
   );
 

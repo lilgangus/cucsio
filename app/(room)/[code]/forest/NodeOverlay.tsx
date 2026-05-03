@@ -41,6 +41,13 @@ import {
   useSessionMessages,
 } from "./hooks";
 
+function isSendAbortError(e: unknown): boolean {
+  return (
+    (e instanceof DOMException && e.name === "AbortError") ||
+    (e instanceof Error && e.name === "AbortError")
+  );
+}
+
 /** Collapsed label beside a user bubble (AGENTS collision rule: `#first4` of identity id). */
 function resolveSenderChip(
   userId: string,
@@ -94,6 +101,8 @@ function resolveSenderChip(
 /** Passed into `onSendNew` so first-send can wire the same streaming UX as normal sends. */
 export type AssistantStreamCallbacks = {
   onAssistantDelta: (accumulated: string) => void;
+  /** Cancel LLM stream when leaving the overlay — server clears `pending_user_id`. */
+  signal?: AbortSignal;
 };
 
 export type OverlayProps = {
@@ -231,6 +240,12 @@ export function NodeOverlay(props: OverlayProps) {
     null
   );
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  /** Abort ongoing `/messages` fetch when the user closes the overlay or it unmounts. */
+  const sendAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => sendAbortRef.current?.abort();
+  }, []);
 
   // Reset optional target when entering a pending create/fork flow only.
   // Do not read forkContext here: when sessions refresh, forkContext identity
@@ -277,6 +292,11 @@ export function NodeOverlay(props: OverlayProps) {
     return () => cancelAnimationFrame(id);
   }, []);
 
+  const handleClose = useCallback(() => {
+    sendAbortRef.current?.abort();
+    onClose();
+  }, [onClose]);
+
   /** Hide live stream bubble once the persisted assistant row (Realtime) matches streamed text. */
   const showAssistantStream = useMemo(() => {
     if (streamingAssistant === null) return false;
@@ -290,6 +310,9 @@ export function NodeOverlay(props: OverlayProps) {
     if (!text || sending) return;
     if (lockedByOther) return;
 
+    sendAbortRef.current?.abort();
+    const ac = new AbortController();
+    sendAbortRef.current = ac;
     setSending(true);
     setStreamingAssistant("");
     try {
@@ -299,6 +322,7 @@ export function NodeOverlay(props: OverlayProps) {
           pendingTarget.trim() || undefined,
           {
             onAssistantDelta: (acc) => setStreamingAssistant(acc),
+            signal: ac.signal,
           }
         );
         if (!created) return;
@@ -307,11 +331,13 @@ export function NodeOverlay(props: OverlayProps) {
       } else if (sessionId) {
         await sendMessage(sessionId, { content: text }, {
           onAssistantDelta: (acc) => setStreamingAssistant(acc),
+          signal: ac.signal,
         });
       }
       setDraft("");
     } catch (err) {
       setStreamingAssistant(null); // stop bubble on error
+      if (isSendAbortError(err)) return;
       const msg =
         err instanceof ApiError
           ? err.status === 409
@@ -320,6 +346,7 @@ export function NodeOverlay(props: OverlayProps) {
           : "Could not send";
       toast.error(msg);
     } finally {
+      if (sendAbortRef.current === ac) sendAbortRef.current = null;
       setSending(false);
     }
   }, [
@@ -335,7 +362,7 @@ export function NodeOverlay(props: OverlayProps) {
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Escape") {
       e.preventDefault();
-      onClose();
+      handleClose();
       return;
     }
     if (e.key === "Enter" && !e.shiftKey) {
@@ -390,7 +417,7 @@ export function NodeOverlay(props: OverlayProps) {
   return (
     <div
       className="absolute inset-0 z-30 flex items-center justify-center p-4 sm:p-8"
-      onClick={onClose}
+      onClick={handleClose}
       role="presentation"
     >
       <div
@@ -454,7 +481,7 @@ export function NodeOverlay(props: OverlayProps) {
             <Button
               variant="ghost"
               size="icon-sm"
-              onClick={onClose}
+              onClick={handleClose}
               aria-label="Close"
             >
               <XIcon />
@@ -466,26 +493,13 @@ export function NodeOverlay(props: OverlayProps) {
           ref={scrollerRef}
           className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-5"
         >
-          {/* "Branched from" breadcrumb for any node with parents */}
           {parentIds.length > 0 ? (
-            <BranchedFrom
+            <SessionSourcesBanner
               parentIds={parentIds}
               parentLabels={parentLabels}
+              forkContext={forkContext}
               onOpenSession={onOpenSession}
             />
-          ) : null}
-
-          {forkContext ? (
-            <div className="rounded-xl border border-blue-500/25 bg-blue-500/10 px-3 py-2 text-xs text-blue-900 dark:text-blue-100">
-              <p className="font-medium">
-                Context: {forkContext.ancestorTargets.join(" → ")}
-              </p>
-              {forkContext.inheritedSummary ? (
-                <p className="mt-1 line-clamp-3 text-[11px] text-blue-800/90 dark:text-blue-200/90">
-                  {forkContext.inheritedSummary}
-                </p>
-              ) : null}
-            </div>
           ) : null}
 
           {isPending ? (
@@ -664,35 +678,67 @@ function PresenceChip({ others }: { others: PresenceState[] }) {
 }
 
 /**
- * "Branched from [A] [B] [C]" breadcrumb shown at the top of the message
- * list for any node that has parents. Clicking a parent label fires
- * `onOpenSession` to swap the overlay to that node.
+ * Unified “Sources” strip: clickable parent session(s) using session purpose
+ * labels, optional inherited summary, and (for single-parent forks) upstream lineage.
  */
-function BranchedFrom({
+function SessionSourcesBanner({
   parentIds,
   parentLabels,
+  forkContext,
   onOpenSession,
 }: {
   parentIds: string[];
   parentLabels: Record<string, string>;
+  forkContext: OverlayProps["forkContext"];
   onOpenSession: (id: string) => void;
 }) {
+  const showUpstream =
+    forkContext != null &&
+    forkContext.ancestorTargets.length > 1 &&
+    parentIds.length === 1;
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-700 dark:border-violet-800/50 dark:bg-violet-950/40 dark:text-violet-300">
-      <GitBranchIcon className="size-3.5 shrink-0 opacity-70" />
-      <span className="font-medium">Branched from</span>
-      {parentIds.map((pid, i) => (
-        <span key={pid} className="flex items-center gap-1">
-          {i > 0 ? <span className="opacity-50">+</span> : null}
-          <button
-            type="button"
-            onClick={() => onOpenSession(pid)}
-            className="rounded px-1.5 py-0.5 font-medium underline underline-offset-2 hover:bg-violet-100 dark:hover:bg-violet-900/50"
-          >
-            {parentLabels[pid] ?? pid.slice(0, 8)}
-          </button>
+    <div className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2.5 text-xs text-violet-800 dark:border-violet-800/50 dark:bg-violet-950/40 dark:text-violet-200">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <GitBranchIcon className="size-3.5 shrink-0 opacity-80" aria-hidden />
+        <span className="font-semibold text-violet-900 dark:text-violet-100">
+          Sources
         </span>
-      ))}
+        <span className="text-[11px] text-violet-600/90 dark:text-violet-400/90">
+          Open a previous branch below.
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {parentIds.map((pid, i) => (
+          <span key={pid} className="flex max-w-full items-center gap-1">
+            {i > 0 ? (
+              <span className="shrink-0 text-violet-400 dark:text-violet-500">
+                +
+              </span>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => onOpenSession(pid)}
+              className="max-w-[min(100%,18rem)] truncate rounded-md border border-violet-300/80 bg-white/90 px-2 py-1 text-left font-medium text-violet-950 hover:bg-violet-100 dark:border-violet-700 dark:bg-violet-900/55 dark:text-violet-50 dark:hover:bg-violet-900"
+            >
+              {parentLabels[pid] ?? pid.slice(0, 8)}
+            </button>
+          </span>
+        ))}
+      </div>
+      {forkContext?.inheritedSummary ? (
+        <p className="mt-2 line-clamp-4 border-t border-violet-200/70 pt-2 text-[11px] leading-relaxed text-violet-800/95 dark:border-violet-800 dark:text-violet-200/90">
+          {forkContext.inheritedSummary}
+        </p>
+      ) : null}
+      {showUpstream && forkContext ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-violet-800/90 dark:text-violet-300/90">
+          <span className="font-medium text-violet-950 dark:text-violet-100">
+            Upstream lineage:{" "}
+          </span>
+          {forkContext.ancestorTargets.join(" → ")}
+        </p>
+      ) : null}
     </div>
   );
 }
