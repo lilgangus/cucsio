@@ -18,6 +18,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 
+import { UpstreamKeyDetails } from "@/components/chat/UpstreamKeyDetails";
 import { AssistantStreamBubble } from "@/components/chat/AssistantStreamBubble";
 import { ChatBubble, type ChatBubbleSenderChip } from "@/components/chat/ChatBubble";
 import { SelectableMessage } from "@/components/highlight/SelectableMessage";
@@ -89,9 +90,8 @@ function resolveSenderChip(
  *                   messages, send into it, branch off it.
  *   2. new-tree   — overlay shown before the session exists; the parent
  *                   creates it on first send.
- *   3. new-fork   — overlay shown immediately after New branch so the
- *                   user sees the parent's history while the fork API
- *                   is still in flight; parent finalizes on first send.
+ *   3. new-fork   — overlay before first send; fork creates an empty child
+ *                   with AI key-details from parents (no copied messages).
  *
  * Lock rules (see API route): one user holds `pending_user_id` while
  * sending. While someone else holds it, our input is disabled and we
@@ -489,6 +489,7 @@ export function NodeOverlay(props: OverlayProps) {
           </div>
         </header>
 
+        <div className="relative flex min-h-0 flex-1 flex-col">
         <div
           ref={scrollerRef}
           className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-5"
@@ -500,6 +501,10 @@ export function NodeOverlay(props: OverlayProps) {
               forkContext={forkContext}
               onOpenSession={onOpenSession}
             />
+          ) : null}
+
+          {session?.smart_context?.trim() ? (
+            <UpstreamKeyDetails content={session.smart_context} />
           ) : null}
 
           {isPending ? (
@@ -522,7 +527,7 @@ export function NodeOverlay(props: OverlayProps) {
           {pendingMode === "new-tree" && messages.length === 0 ? (
             <EmptyHint text="Send the first message to plant this tree." />
           ) : pendingMode === "new-fork" && messages.length === 0 ? (
-            <EmptyHint text="First send will create the fork." />
+            <EmptyHint text="First message creates the branch (starts with key details from upstream, not the old transcript)." />
           ) : pendingMode === "new-combine" &&
             messages.length === 0 &&
             parentIds.length === 0 ? (
@@ -613,6 +618,8 @@ export function NodeOverlay(props: OverlayProps) {
             <ArrowDownIcon className="rotate-[-90deg]" />
           </Button>
         </form>
+
+        </div>
       </div>
     </div>
   );

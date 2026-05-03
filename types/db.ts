@@ -39,6 +39,11 @@ export interface SessionRow {
   label: string | null;
   tags: string[];
   summary: string;
+  /**
+   * LLM-distilled highlights from ancestor sessions, aligned to
+   * `session_target`. Set when creating a fork or combined-context session.
+   */
+  smart_context?: string;
   created_by: Uuid | null;
   created_at: IsoTimestamp;
   updated_at: IsoTimestamp;
