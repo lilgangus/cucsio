@@ -1,6 +1,6 @@
 "use client";
 
-import { LockIcon, MessageSquareIcon } from "lucide-react";
+import { LockIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 
 import type { PresenceState } from "@/lib/realtime/channels";
@@ -23,7 +23,6 @@ type Props = {
   position: { x: number; y: number };
   label: string;
   summary: string;
-  messageCount: number;
   isRoot: boolean;
   /** True when someone in the session is mid-send. Drawn as a lock chip. */
   isLocked: boolean;
@@ -46,7 +45,6 @@ export function NodeCard({
   position,
   label,
   summary,
-  messageCount,
   isRoot,
   isLocked,
   presence,
@@ -55,11 +53,7 @@ export function NodeCard({
   className,
 }: Props) {
   const displaySummary =
-    summary.trim().length > 0
-      ? summary
-      : messageCount === 0
-        ? "Empty chat — click to start"
-        : `${messageCount} message${messageCount === 1 ? "" : "s"}`;
+    summary.trim().length > 0 ? summary : "No summary yet for this session";
 
   return (
     <button
@@ -79,7 +73,7 @@ export function NodeCard({
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {isRoot ? "root" : label}
+            {isRoot ? "root session" : "session target"}
           </span>
           {isLocked ? (
             <LockIcon
@@ -92,13 +86,12 @@ export function NodeCard({
       </div>
 
       <span className="line-clamp-2 text-sm font-medium leading-snug text-foreground">
-        {displaySummary}
+        {label}
       </span>
 
-      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-        <MessageSquareIcon className="size-3" />
-        <span>{messageCount}</span>
-      </div>
+      <span className="line-clamp-2 text-xs leading-snug text-muted-foreground">
+        {displaySummary}
+      </span>
     </button>
   );
 }

@@ -12,6 +12,7 @@ type Body = {
    */
   forkPointMessageId?: unknown;
   label?: unknown;
+  sessionTarget?: unknown;
 };
 
 const UUID_RE =
@@ -22,10 +23,8 @@ type Params = { params: Promise<{ id: string }> };
 /**
  * Fork a session. Per AGENTS.md "Forking semantics":
  *
- *   "Fork = copy. When a user forks from messageId of session A, insert
- *    a new sessions row with parent_session_id = A.id and
- *    fork_point_message_id = messageId, then copy messages 1..N from A
- *    into the new session as fresh rows."
+ *   "Fork = child session with parent pointer + fork point." For this
+ *   UI variant we do NOT duplicate parent messages into the child.
  *
  * The duplication cost is fine for an MVP. Multi-parent merges are
  * explicitly out of scope.
@@ -118,6 +117,12 @@ export async function POST(req: Request, ctx: Params) {
   }
 
   const rawLabel = typeof body.label === "string" ? body.label.trim() : "";
+  const rawTarget =
+    typeof body.sessionTarget === "string" ? body.sessionTarget.trim() : "";
+  const sessionTarget =
+    rawTarget.length > 0
+      ? rawTarget.slice(0, 160)
+      : parentRow.session_target?.trim() || "General exploration";
   const childLabel =
     rawLabel.length > 0
       ? rawLabel.slice(0, 64)
@@ -131,6 +136,7 @@ export async function POST(req: Request, ctx: Params) {
       project_id: parentRow.project_id,
       parent_session_id: parentRow.id,
       fork_point_message_id: forkPointId,
+      session_target: sessionTarget,
       label: childLabel,
       summary: parentRow.summary,
       created_by: clientId,
@@ -146,66 +152,10 @@ export async function POST(req: Request, ctx: Params) {
   }
   const childRow = child as SessionRow;
 
-  // Copy messages 1..forkPoint from parent.
-  let copiedCount = 0;
-  if (cutoffCreatedAt) {
-    const { data: history, error: histErr } = await supabase
-      .from("messages")
-      .select("role, author_id, content, model, prompt_tokens, completion_tokens")
-      .eq("session_id", parentRow.id)
-      .eq("is_deleted", false)
-      .lte("created_at", cutoffCreatedAt)
-      .order("created_at", { ascending: true });
-    if (histErr) {
-      console.error("[/api/sessions/fork] history pull", histErr);
-      // Roll back the orphan child so the user can retry.
-      await supabase.from("sessions").delete().eq("id", childRow.id);
-      return NextResponse.json({ error: histErr.message }, { status: 500 });
-    }
-
-    if (history && history.length > 0) {
-      const rows = history.map((m) => ({
-        session_id: childRow.id,
-        role: m.role,
-        author_id: m.author_id,
-        content: m.content,
-        model: m.model,
-        prompt_tokens: m.prompt_tokens,
-        completion_tokens: m.completion_tokens,
-      }));
-      const { error: copyErr } = await supabase.from("messages").insert(rows);
-      if (copyErr) {
-        console.error("[/api/sessions/fork] copy messages", copyErr);
-        await supabase.from("sessions").delete().eq("id", childRow.id);
-        return NextResponse.json({ error: copyErr.message }, { status: 500 });
-      }
-      copiedCount = rows.length;
-
-      const { data: refreshed } = await supabase
-        .from("sessions")
-        .update({
-          message_count: copiedCount,
-          last_activity_at: new Date().toISOString(),
-        })
-        .eq("id", childRow.id)
-        .select()
-        .single();
-      if (refreshed) {
-        return NextResponse.json({
-          session: refreshed as SessionRow,
-          copiedMessages: copiedCount,
-        });
-      }
-    }
-  }
-
-  return NextResponse.json({
-    session: childRow,
-    copiedMessages: copiedCount,
-  });
+  void cutoffCreatedAt;
+  return NextResponse.json({ session: childRow });
 }
 
 export type ForkResponse = {
   session: SessionRow;
-  copiedMessages: number;
 };

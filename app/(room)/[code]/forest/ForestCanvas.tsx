@@ -19,8 +19,6 @@ import {
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 import { cn } from "@/lib/utils";
-import { getSupabaseBrowser } from "@/lib/supabase/browser";
-import type { MessageRow } from "@/types/db";
 import {
   buildForestFromSessions,
   layoutForest,
@@ -62,6 +60,11 @@ type Props = {
   projectId: string;
 };
 
+type ForkContext = {
+  ancestorTargets: string[];
+  inheritedSummary: string | null;
+};
+
 export function ForestCanvas({ projectId }: Props) {
   const { sessions, loading, error } = useProjectSessions(projectId);
   const [target, setTarget] = useState<OverlayTarget | null>(null);
@@ -74,11 +77,6 @@ export function ForestCanvas({ projectId }: Props) {
       : target?.kind === "new-fork"
         ? target.parentSessionId
         : null;
-
-  // History captured at the moment Branch Off is clicked, so the
-  // overlay can render the parent's messages while the fork API is
-  // still in flight. Cleared once the new session id is known.
-  const [pendingForkHistory, setPendingForkHistory] = useState<MessageRow[]>([]);
 
   const forest = useMemo(() => buildForestFromSessions(sessions), [sessions]);
   const layout = useMemo(() => layoutForest(forest), [forest]);
@@ -122,22 +120,10 @@ export function ForestCanvas({ projectId }: Props) {
 
   const closeOverlay = () => {
     setTarget(null);
-    setPendingForkHistory([]);
   };
 
   const branchOff = useCallback(
     async (parentSessionId: string) => {
-      // Snapshot the parent's messages so the overlay has something to
-      // show during the fork roundtrip. Same query as the live hook
-      // but in isolation so we don't mount an extra subscription.
-      const supabase = getSupabaseBrowser();
-      const { data: history } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("session_id", parentSessionId)
-        .eq("is_deleted", false)
-        .order("created_at", { ascending: true });
-      setPendingForkHistory((history ?? []) as MessageRow[]);
       setTarget({ kind: "new-fork", parentSessionId });
     },
     []
@@ -149,21 +135,27 @@ export function ForestCanvas({ projectId }: Props) {
    * Returns the new session id so the overlay can switch over.
    */
   const handleFirstSend = useCallback(
-    async (content: string): Promise<{ sessionId: string } | null> => {
+    async (
+      content: string,
+      sessionTarget?: string
+    ): Promise<{ sessionId: string } | null> => {
       if (!target) return null;
       try {
         if (target.kind === "new-tree") {
-          const { session } = await createSession({ projectId });
+          const { session } = await createSession({
+            projectId,
+            sessionTarget,
+          });
           await sendMessage(session.id, { content });
           setTarget({ kind: "session", sessionId: session.id });
-          setPendingForkHistory([]);
           return { sessionId: session.id };
         }
         if (target.kind === "new-fork") {
-          const { session } = await forkSession(target.parentSessionId);
+          const { session } = await forkSession(target.parentSessionId, {
+            sessionTarget,
+          });
           await sendMessage(session.id, { content });
           setTarget({ kind: "session", sessionId: session.id });
-          setPendingForkHistory([]);
           return { sessionId: session.id };
         }
       } catch (err) {
@@ -183,6 +175,48 @@ export function ForestCanvas({ projectId }: Props) {
     if (target?.kind !== "session") return null;
     return sessions.find((s) => s.id === target.sessionId) ?? null;
   }, [target, sessions]);
+
+  const sessionsById = useMemo(
+    () => new Map(sessions.map((s) => [s.id, s] as const)),
+    [sessions]
+  );
+
+  const buildForkContext = useCallback(
+    (startParentId: string | null): ForkContext | null => {
+      if (!startParentId) return null;
+      const targets: string[] = [];
+      let inheritedSummary: string | null = null;
+      let cursorId: string | null = startParentId;
+      let guard = 0;
+      while (cursorId && guard < 8) {
+        const row = sessionsById.get(cursorId);
+        if (!row) break;
+        const t =
+          row.session_target?.trim() ||
+          row.label?.trim() ||
+          `Session ${row.id.slice(0, 6)}`;
+        targets.push(t);
+        if (!inheritedSummary && row.summary.trim().length > 0) {
+          inheritedSummary = row.summary;
+        }
+        cursorId = row.parent_session_id;
+        guard += 1;
+      }
+      if (targets.length === 0) return null;
+      return { ancestorTargets: targets, inheritedSummary };
+    },
+    [sessionsById]
+  );
+
+  const forkContext = useMemo(() => {
+    if (target?.kind === "new-fork") {
+      return buildForkContext(target.parentSessionId);
+    }
+    if (target?.kind === "session" && targetSession?.parent_session_id) {
+      return buildForkContext(targetSession.parent_session_id);
+    }
+    return null;
+  }, [target, targetSession, buildForkContext]);
 
   // Render -----------------------------------------------------------
 
@@ -223,7 +257,6 @@ export function ForestCanvas({ projectId }: Props) {
                 position={offset(pos)}
                 label={node.label}
                 summary={node.summary}
-                messageCount={node.messageCount}
                 isRoot={node.parentId == null}
                 isLocked={node.pendingUserId != null}
                 presence={othersBySession[node.id] ?? []}
@@ -255,9 +288,6 @@ export function ForestCanvas({ projectId }: Props) {
                 ? (presenceBySession[target.parentSessionId] ?? [])
                 : []
           }
-          prefetchedMessages={
-            target.kind === "new-fork" ? pendingForkHistory : undefined
-          }
           isPending={target.kind !== "session"}
           pendingMode={
             target.kind === "new-tree"
@@ -267,6 +297,7 @@ export function ForestCanvas({ projectId }: Props) {
                 : undefined
           }
           onSendNew={handleFirstSend}
+          forkContext={forkContext}
           onBranchOff={() => {
             if (target.kind === "session") void branchOff(target.sessionId);
           }}
