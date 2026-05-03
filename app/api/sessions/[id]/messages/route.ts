@@ -104,6 +104,18 @@ export async function POST(req: Request, ctx: Params) {
   let assistantMsg: MessageRow | null = null;
 
   try {
+    const { count: priorUserCount, error: countErr } = await supabase
+      .from("messages")
+      .select("*", { count: "exact", head: true })
+      .eq("session_id", sessionId)
+      .eq("role", "user")
+      .eq("is_deleted", false);
+    if (countErr) {
+      console.error("[/api/sessions/messages] user-count", countErr);
+    }
+    const isFirstUserMessage =
+      !countErr && typeof priorUserCount === "number" && priorUserCount === 0;
+
     // 2. Insert the user's message.
     const { data: insertedUser, error: insertUserErr } = await supabase
       .from("messages")
@@ -143,15 +155,22 @@ export async function POST(req: Request, ctx: Params) {
     }
     assistantMsg = insertedAsst as MessageRow;
 
-    // 5. Bump aggregate counters on the session row.
-    await supabase
-      .from("sessions")
-      .update({
-        message_count: session.message_count + 2,
-        last_activity_at: now(),
-        updated_at: now(),
-      })
-      .eq("id", sessionId);
+    // 5. Bump aggregate counters on the session row. First user message
+    // becomes the session title (and session_target if still empty).
+    const branchTitle = labelFromFirstUserMessage(content);
+    const sessionPatch: Record<string, string | number> = {
+      message_count: session.message_count + 2,
+      last_activity_at: now(),
+      updated_at: now(),
+    };
+    if (isFirstUserMessage) {
+      sessionPatch.label = branchTitle;
+      if (!(session.session_target ?? "").trim()) {
+        sessionPatch.session_target = branchTitle;
+      }
+    }
+
+    await supabase.from("sessions").update(sessionPatch).eq("id", sessionId);
 
     return NextResponse.json({ user: userMsg, assistant: assistantMsg });
   } catch (e) {
@@ -171,6 +190,13 @@ export async function POST(req: Request, ctx: Params) {
 
 function fakeRespond(prompt: string): string {
   return prompt;
+}
+
+/** Collapse whitespace and cap length for `sessions.label` / `session_target`. */
+function labelFromFirstUserMessage(content: string): string {
+  const line = content.replace(/\s+/g, " ").trim();
+  if (!line.length) return "Untitled";
+  return line.slice(0, 64);
 }
 
 export type SendMessageResponse = {

@@ -68,6 +68,16 @@ export interface MessageRow {
   is_deleted: boolean;
 }
 
+/**
+ * One row per (child → parent) edge in the DAG. Regular single-parent
+ * forks have exactly one row; combined-context nodes have two or more.
+ * Added in migration 0004_session_parents.sql.
+ */
+export interface SessionParentRow {
+  session_id: Uuid;
+  parent_id: Uuid;
+}
+
 export interface SessionParticipantRow {
   session_id: Uuid;
   user_id: Uuid;

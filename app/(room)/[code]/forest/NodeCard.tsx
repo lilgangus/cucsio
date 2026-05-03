@@ -1,7 +1,7 @@
 "use client";
 
-import { LockIcon } from "lucide-react";
-import type { CSSProperties } from "react";
+import { CheckIcon, LockIcon } from "lucide-react";
+import type { CSSProperties, KeyboardEvent } from "react";
 
 import type { PresenceState } from "@/lib/realtime/channels";
 import { cn } from "@/lib/utils";
@@ -9,14 +9,12 @@ import { cn } from "@/lib/utils";
 import { NODE_H, NODE_W } from "./compute-layout";
 
 /**
- * Visual atom of the forest. One rounded card per session, sat on top
- * of the canvas at its computed (x, y).
+ * Visual atom of the DAG. One rounded card per session.
  *
- * Carries three live signals from the DB / realtime layer:
- *   - `messageCount` — informational badge
- *   - `pendingUserId` (boolean here, kept generic) — lock chip
- *   - `presence` — small avatar stack so users can spot at a glance
- *     "another user is in here right now"
+ * Selection model:
+ *   `isSelected`  — blue ring; the Select control shows a check.
+ *   The card body is a `div role="button"` (not a `<button>`) so the
+ *   inner Select can remain a real `<button>` without invalid nesting.
  */
 
 type Props = {
@@ -24,11 +22,14 @@ type Props = {
   label: string;
   summary: string;
   isRoot: boolean;
+  isMerged: boolean;
   /** True when someone in the session is mid-send. Drawn as a lock chip. */
   isLocked: boolean;
   /** Other clients currently viewing this session. Self should be filtered out by caller. */
   presence: PresenceState[];
   focused?: boolean;
+  isSelected?: boolean;
+  onSelect?: () => void;
   onClick?: () => void;
   className?: string;
 };
@@ -46,53 +47,102 @@ export function NodeCard({
   label,
   summary,
   isRoot,
+  isMerged,
   isLocked,
   presence,
   focused,
+  isSelected,
+  onSelect,
   onClick,
   className,
 }: Props) {
   const displaySummary =
     summary.trim().length > 0 ? summary : "No summary yet for this session";
 
+  const chipLabel = isMerged ? "blended" : isRoot ? "root session" : "session";
+
+  const onCardKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick?.();
+    }
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       style={baseStyle(position)}
-      className={cn(
-        "group/node flex flex-col items-stretch justify-between gap-1 rounded-2xl border bg-card px-3 py-2 text-left",
-        "shadow-sm transition-all hover:scale-[1.02] hover:shadow-md",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        focused
-          ? "border-primary/70 ring-2 ring-primary/40"
-          : "border-border hover:border-foreground/20",
-        className
-      )}
+      className={cn("group/node-wrap", className)}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {isRoot ? "root session" : "session target"}
-          </span>
-          {isLocked ? (
-            <LockIcon
-              className="size-3 shrink-0 text-amber-500"
-              aria-label="Someone is sending"
-            />
-          ) : null}
+      {/* `div` + role="button" so the Select control can be a nested `<button>`. */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label={`Open chat: ${label}`}
+        onClick={() => onClick?.()}
+        onKeyDown={onCardKeyDown}
+        className={cn(
+          "flex h-full w-full cursor-pointer flex-col items-stretch justify-between gap-1 rounded-2xl border bg-card px-3 py-2 text-left",
+          "shadow-sm transition-all hover:scale-[1.02] hover:shadow-md",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          isSelected
+            ? "border-blue-500 ring-2 ring-blue-400/60 dark:border-blue-400 dark:ring-blue-300/50"
+            : focused
+              ? "border-primary/70 ring-2 ring-primary/40"
+              : "border-border hover:border-foreground/20"
+        )}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={cn(
+                "truncate text-[11px] font-semibold uppercase tracking-wider",
+                isMerged
+                  ? "text-violet-500 dark:text-violet-300"
+                  : "text-muted-foreground"
+              )}
+            >
+              {chipLabel}
+            </span>
+            {isLocked ? (
+              <LockIcon
+                className="size-3 shrink-0 text-amber-500"
+                aria-label="Someone is sending"
+              />
+            ) : null}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <PresenceDots users={presence} />
+            <button
+              type="button"
+              aria-label={isSelected ? "Deselect node" : "Select node"}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect?.();
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              className={cn(
+                "inline-flex size-5 items-center justify-center rounded-full border transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400",
+                isSelected
+                  ? "border-blue-500 bg-blue-500 text-white dark:border-blue-400 dark:bg-blue-400"
+                  : "border-border bg-card text-transparent hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950"
+              )}
+            >
+              <CheckIcon className="size-3" strokeWidth={3} />
+            </button>
+          </div>
         </div>
-        <PresenceDots users={presence} />
+
+        <span className="line-clamp-2 text-sm font-medium leading-snug text-foreground">
+          {label}
+        </span>
+
+        <span className="line-clamp-2 text-xs leading-snug text-muted-foreground">
+          {displaySummary}
+        </span>
       </div>
-
-      <span className="line-clamp-2 text-sm font-medium leading-snug text-foreground">
-        {label}
-      </span>
-
-      <span className="line-clamp-2 text-xs leading-snug text-muted-foreground">
-        {displaySummary}
-      </span>
-    </button>
+    </div>
   );
 }
 

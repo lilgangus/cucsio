@@ -81,7 +81,7 @@ function resolveSenderChip(
  *                   messages, send into it, branch off it.
  *   2. new-tree   — overlay shown before the session exists; the parent
  *                   creates it on first send.
- *   3. new-fork   — overlay shown immediately after Branch Off so the
+ *   3. new-fork   — overlay shown immediately after New branch so the
  *                   user sees the parent's history while the fork API
  *                   is still in flight; parent finalizes on first send.
  *
@@ -102,7 +102,17 @@ export type OverlayProps = {
   prefetchedMessages?: MessageRow[];
   /** True when no session exists yet (new-tree or new-fork). */
   isPending: boolean;
-  pendingMode?: "new-tree" | "new-fork";
+  pendingMode?: "new-tree" | "new-fork" | "new-combine";
+  /**
+   * All parent session ids for this overlay. Empty for root nodes.
+   * The overlay renders "Branched from [parent labels]" for these.
+   */
+  parentIds: string[];
+  /**
+   * Map of session_id → human label, so "Branched from" can render
+   * actual names instead of raw UUIDs.
+   */
+  parentLabels: Record<string, string>;
   /** Async hook the parent provides for first-send creation flows. */
   onSendNew?: (
     content: string,
@@ -114,6 +124,8 @@ export type OverlayProps = {
     inheritedSummary: string | null;
   } | null;
   onBranchOff: () => void;
+  /** Open a different session in the overlay (used by "Branched from" links). */
+  onOpenSession: (sessionId: string) => void;
   onClose: () => void;
 };
 
@@ -124,9 +136,12 @@ export function NodeOverlay(props: OverlayProps) {
     prefetchedMessages,
     isPending,
     pendingMode,
+    parentIds,
+    parentLabels,
     onSendNew,
     forkContext,
     onBranchOff,
+    onOpenSession,
     onClose,
   } = props;
 
@@ -313,8 +328,10 @@ export function NodeOverlay(props: OverlayProps) {
     pendingMode === "new-tree"
       ? "Start a new tree"
       : pendingMode === "new-fork"
-        ? "Branch off — first message starts the new node"
-        : "Chat";
+        ? "New branch — first message starts the new node"
+        : pendingMode === "new-combine"
+          ? "New chat with context — first message creates the node"
+          : "Chat";
 
   const overlayAriaLabel = isPending
     ? pendingHeadline
@@ -381,10 +398,10 @@ export function NodeOverlay(props: OverlayProps) {
               size="sm"
               onClick={onBranchOff}
               disabled={!canBranch}
-              aria-label="Branch off into a new fork"
+              aria-label="Start a new branch from this chat"
             >
               <GitBranchIcon />
-              Branch off
+              New branch
             </Button>
             <Button
               variant="ghost"
@@ -401,10 +418,19 @@ export function NodeOverlay(props: OverlayProps) {
           ref={scrollerRef}
           className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-5"
         >
+          {/* "Branched from" breadcrumb for any node with parents */}
+          {parentIds.length > 0 ? (
+            <BranchedFrom
+              parentIds={parentIds}
+              parentLabels={parentLabels}
+              onOpenSession={onOpenSession}
+            />
+          ) : null}
+
           {forkContext ? (
             <div className="rounded-xl border border-blue-500/25 bg-blue-500/10 px-3 py-2 text-xs text-blue-900 dark:text-blue-100">
               <p className="font-medium">
-                Fork context: {forkContext.ancestorTargets.join(" -> ")}
+                Context: {forkContext.ancestorTargets.join(" → ")}
               </p>
               {forkContext.inheritedSummary ? (
                 <p className="mt-1 line-clamp-3 text-[11px] text-blue-800/90 dark:text-blue-200/90">
@@ -432,13 +458,13 @@ export function NodeOverlay(props: OverlayProps) {
           ) : null}
 
           {pendingMode === "new-tree" && messages.length === 0 ? (
-            <EmptyHint
-              text="Send the first message to plant this tree."
-            />
+            <EmptyHint text="Send the first message to plant this tree." />
           ) : pendingMode === "new-fork" && messages.length === 0 ? (
-            <EmptyHint
-              text="Branching... first send will create the fork."
-            />
+            <EmptyHint text="First send will create the fork." />
+          ) : pendingMode === "new-combine" &&
+            messages.length === 0 &&
+            parentIds.length === 0 ? (
+            <EmptyHint text="First send will create the new node." />
           ) : null}
 
           {messages.map((m) => (
@@ -607,6 +633,40 @@ function ChatBubble({
       >
         {content}
       </div>
+    </div>
+  );
+}
+
+/**
+ * "Branched from [A] [B] [C]" breadcrumb shown at the top of the message
+ * list for any node that has parents. Clicking a parent label fires
+ * `onOpenSession` to swap the overlay to that node.
+ */
+function BranchedFrom({
+  parentIds,
+  parentLabels,
+  onOpenSession,
+}: {
+  parentIds: string[];
+  parentLabels: Record<string, string>;
+  onOpenSession: (id: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-700 dark:border-violet-800/50 dark:bg-violet-950/40 dark:text-violet-300">
+      <GitBranchIcon className="size-3.5 shrink-0 opacity-70" />
+      <span className="font-medium">Branched from</span>
+      {parentIds.map((pid, i) => (
+        <span key={pid} className="flex items-center gap-1">
+          {i > 0 ? <span className="opacity-50">+</span> : null}
+          <button
+            type="button"
+            onClick={() => onOpenSession(pid)}
+            className="rounded px-1.5 py-0.5 font-medium underline underline-offset-2 hover:bg-violet-100 dark:hover:bg-violet-900/50"
+          >
+            {parentLabels[pid] ?? pid.slice(0, 8)}
+          </button>
+        </span>
+      ))}
     </div>
   );
 }

@@ -122,13 +122,9 @@ export async function POST(req: Request, ctx: Params) {
   const sessionTarget =
     rawTarget.length > 0
       ? rawTarget.slice(0, 160)
-      : parentRow.session_target?.trim() || "General exploration";
-  const childLabel =
-    rawLabel.length > 0
-      ? rawLabel.slice(0, 64)
-      : parentRow.label
-        ? `${parentRow.label} fork`
-        : "Fork";
+      : parentRow.session_target?.trim() || undefined;
+  /** Null until the first user message in the fork names it (messages route). */
+  const childLabel = rawLabel.length > 0 ? rawLabel.slice(0, 64) : null;
 
   const { data: child, error: childErr } = await supabase
     .from("sessions")
@@ -152,8 +148,74 @@ export async function POST(req: Request, ctx: Params) {
   }
   const childRow = child as SessionRow;
 
-  void cutoffCreatedAt;
-  return NextResponse.json({ session: childRow });
+  // Record the parent edge in session_parents so the UI can render
+  // multi-parent edges and "Branched from" breadcrumbs.
+  const { error: edgeErr } = await supabase
+    .from("session_parents")
+    .insert({ session_id: childRow.id, parent_id: parentRow.id });
+  if (edgeErr) {
+    // Non-fatal: the session was created; the parent edge is advisory.
+    // Log and continue rather than rolling back the fork.
+    console.warn("[/api/sessions/fork] session_parents insert", edgeErr);
+  }
+
+  // Copy messages 1..forkPoint from parent.
+  let copiedCount = 0;
+  if (cutoffCreatedAt) {
+    const { data: history, error: histErr } = await supabase
+      .from("messages")
+      .select("role, author_id, content, model, prompt_tokens, completion_tokens")
+      .eq("session_id", parentRow.id)
+      .eq("is_deleted", false)
+      .lte("created_at", cutoffCreatedAt)
+      .order("created_at", { ascending: true });
+    if (histErr) {
+      console.error("[/api/sessions/fork] history pull", histErr);
+      // Roll back the orphan child so the user can retry.
+      await supabase.from("sessions").delete().eq("id", childRow.id);
+      return NextResponse.json({ error: histErr.message }, { status: 500 });
+    }
+
+    if (history && history.length > 0) {
+      const rows = history.map((m) => ({
+        session_id: childRow.id,
+        role: m.role,
+        author_id: m.author_id,
+        content: m.content,
+        model: m.model,
+        prompt_tokens: m.prompt_tokens,
+        completion_tokens: m.completion_tokens,
+      }));
+      const { error: copyErr } = await supabase.from("messages").insert(rows);
+      if (copyErr) {
+        console.error("[/api/sessions/fork] copy messages", copyErr);
+        await supabase.from("sessions").delete().eq("id", childRow.id);
+        return NextResponse.json({ error: copyErr.message }, { status: 500 });
+      }
+      copiedCount = rows.length;
+
+      const { data: refreshed } = await supabase
+        .from("sessions")
+        .update({
+          message_count: copiedCount,
+          last_activity_at: new Date().toISOString(),
+        })
+        .eq("id", childRow.id)
+        .select()
+        .single();
+      if (refreshed) {
+        return NextResponse.json({
+          session: refreshed as SessionRow,
+          copiedMessages: copiedCount,
+        });
+      }
+    }
+  }
+
+  return NextResponse.json({
+    session: childRow,
+    copiedMessages: copiedCount,
+  });
 }
 
 export type ForkResponse = {
