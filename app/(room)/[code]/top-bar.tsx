@@ -148,7 +148,7 @@ export function TopBar({
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
-          <PresenceBar projectId={projectId} />
+          <PresenceBar />
 
           <Button
             variant="outline"

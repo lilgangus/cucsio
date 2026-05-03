@@ -1,10 +1,16 @@
 "use client";
 
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { projectChannel, type PresenceState } from "@/lib/realtime/channels";
+import { peersFromRealtimePresence } from "@/lib/realtime/presence-peers";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 
 /** Shared payload builders keep project + forest presence payloads identical. */
@@ -25,69 +31,74 @@ async function safeUntrack(channel: RealtimeChannel) {
   try {
     await channel.untrack();
   } catch {
-    // Older supabase-js / race during teardown — swallow.
+    // Race during teardown — swallow.
   }
 }
 
 /**
  * Subscribe to a project's Realtime channel and surface live presence.
  *
- * `focusedSessionId` should reflect which chat node (session) the local
- * user currently has popped open in `ForestCanvas` — `null` when they are
- * only browsing the canvas. This mirrors the AGENTS session presence
- * story at the coarse project level so the top-bar avatars stay in sync.
- *
- * Reliability knobs:
- *   - Tracks only **after** the channel reaches `SUBSCRIBED`
- *   - Re-track on focus transitions, tab visibility regain, heartbeat
+ * Reliability:
+ * - Subscribes only after browser mount so `localStorage` identity matches RoomGuard.
+ * - Re-track on focus changes (`useLayoutEffect`) so overlays beat passive effect ordering races.
  */
 export function useProjectPresence(
   projectId: string | null,
   focusedSessionId: string | null
 ): PresenceState[] {
   const [users, setUsers] = useState<PresenceState[]>([]);
+  const [mounted, setMounted] = useState(false);
+
+  /** Post-hydration — first client tick where `localStorage` is trustworthy. */
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const subscribedRef = useRef(false);
   const focusedRef = useRef(focusedSessionId);
 
   useLayoutEffect(() => {
     focusedRef.current = focusedSessionId;
   }, [focusedSessionId]);
 
-  useEffect(() => {
-    if (!projectId) return;
+  /** When anon storage hydrates shortly after paint, recreate the Presence slot with the real UUID key. */
+  const viewerClientId = mounted ? loadIdentity()?.clientId ?? null : null;
 
-    const identity = loadIdentity();
+  useEffect(() => {
+    if (!projectId || !mounted) return;
+
     const supabase = getSupabaseBrowser();
+    /** Stable-ish key ties one Presence slot before identity hydrate (fallback only). */
+    const presenceFallbackKey =
+      typeof crypto !== "undefined"
+        ? `anon-session:${crypto.randomUUID()}`
+        : "anon-unknown";
+
     const channel = supabase.channel(projectChannel(projectId), {
       config: {
         presence: {
-          key: identity?.clientId ?? `anon-${crypto.randomUUID()}`,
+          key: viewerClientId ?? presenceFallbackKey,
         },
       },
     });
     channelRef.current = channel;
+    subscribedRef.current = false;
 
-    const sync = () => {
-      const state = channel.presenceState<PresenceState>();
-      const seen = new Map<string, PresenceState>();
-      for (const refList of Object.values(state)) {
-        for (const entry of refList) {
-          if (!entry?.clientId) continue;
-          if (!seen.has(entry.clientId)) seen.set(entry.clientId, entry);
-        }
+    const flushPeers = () => {
+      try {
+        setUsers(peersFromRealtimePresence(channel));
+      } catch (e) {
+        console.warn("[presence] flush peers failed", e);
       }
-      const next = [...seen.values()].sort((a, b) =>
-        a.joinedAt.localeCompare(b.joinedAt)
-      );
-      setUsers(next);
     };
 
     const pushTrack = async () => {
       const me = loadIdentity();
-      if (!me) return;
+      if (!me || !subscribedRef.current) return;
       try {
         await channel.track(
-          buildPresencePayload(me, focusedRef.current)
+          buildPresencePayload(me, focusedRef.current ?? null)
         );
       } catch (err) {
         console.warn("[presence] project track failed", err);
@@ -95,12 +106,16 @@ export function useProjectPresence(
     };
 
     channel
-      .on("presence", { event: "sync" }, sync)
-      .on("presence", { event: "join" }, sync)
-      .on("presence", { event: "leave" }, sync)
-      .subscribe((status) => {
+      .on("presence", { event: "sync" }, flushPeers)
+      .on("presence", { event: "join" }, flushPeers)
+      .on("presence", { event: "leave" }, flushPeers)
+      .subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
-          void pushTrack();
+          subscribedRef.current = true;
+          await pushTrack();
+          flushPeers();
+        } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+          subscribedRef.current = false;
         }
       });
 
@@ -118,23 +133,38 @@ export function useProjectPresence(
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.clearInterval(heartbeat);
+      subscribedRef.current = false;
       void safeUntrack(channel);
       void channel.unsubscribe();
       void supabase.removeChannel(channel);
-      channelRef.current = null;
+      if (channelRef.current === channel) {
+        channelRef.current = null;
+      }
+      setUsers([]);
     };
-  }, [projectId]);
+  }, [projectId, mounted, viewerClientId]);
 
-  // Focus transitions after the channel is mounted — inexpensive re-track.
-  useEffect(() => {
+  /** Same-tick focus changes (open/close overlay) must win over random passive ordering. */
+  useLayoutEffect(() => {
+    if (!mounted || !channelRef.current) return;
     const ch = channelRef.current;
-    if (!ch) return;
     const me = loadIdentity();
     if (!me) return;
-    void ch.track(buildPresencePayload(me, focusedSessionId)).catch((err) => {
-      console.warn("[presence] project refocus-track failed", err);
-    });
-  }, [focusedSessionId]);
+    void ch
+      .track(buildPresencePayload(me, focusedSessionId))
+      .then(() =>
+        queueMicrotask(() => {
+          try {
+            setUsers(peersFromRealtimePresence(ch));
+          } catch {
+            /* ignore */
+          }
+        })
+      )
+      .catch((err) => {
+        console.warn("[presence] refocus-track failed", err);
+      });
+  }, [focusedSessionId, mounted]);
 
   return users;
 }

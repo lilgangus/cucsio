@@ -1,7 +1,13 @@
 "use client";
 
 import { PlusIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
 import { toast } from "sonner";
 
 import {
@@ -11,11 +17,10 @@ import {
   sendMessage,
 } from "@/lib/api";
 import { loadIdentity, type Identity } from "@/lib/identity";
+import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 import { cn } from "@/lib/utils";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import type { MessageRow } from "@/types/db";
-
-import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 import {
   buildForestFromSessions,
   layoutForest,
@@ -33,8 +38,7 @@ import type { NodePosition, OverlayTarget } from "./types";
 /**
  * The main forest surface. Owns:
  *   - subscriptions for the project's sessions + lock state
- *   - subscriptions for per-session presence (so cards can show
- *     "Alice + Bob in here right now")
+ *   - Per-session `session:{id}` realtime presence (icons on each branch + overlay)
  *   - the layout pass (memoized on the live session list)
  *   - which session, if any, is "popped up" in the overlay
  *
@@ -79,20 +83,17 @@ export function ForestCanvas({ projectId }: Props) {
   const forest = useMemo(() => buildForestFromSessions(sessions), [sessions]);
   const layout = useMemo(() => layoutForest(forest), [forest]);
 
-  // Per-session presence for badge rendering on each card. Single
-  // hook owns all per-session channels (avoids the supabase-js channel
-  // dedup that fires "cannot add presence callbacks after subscribe()").
   const sessionIds = useMemo(() => sessions.map((s) => s.id), [sessions]);
   const presenceBySession = useForestPresence({
     sessionIds,
     activeSessionId: activePresenceSessionId,
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setFocusedSessionId(activePresenceSessionId);
   }, [activePresenceSessionId, setFocusedSessionId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     return () => setFocusedSessionId(null);
   }, [setFocusedSessionId]);
 

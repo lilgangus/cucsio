@@ -6,11 +6,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { PresenceState } from "@/lib/realtime/channels";
-import { useSessionFocus } from "@/lib/realtime/session-focus-context";
-import { useProjectPresence } from "@/lib/realtime/use-presence";
+import { useProjectPeers } from "@/lib/realtime/project-presence-context";
 
 type Props = {
-  projectId: string;
   /** Maximum number of avatars to render before collapsing into a "+N" pill. */
   max?: number;
 };
@@ -74,12 +72,10 @@ function Avatar({ user }: { user: PresenceState }) {
 
 /**
  * Live presence in the room top bar. Mirrors `focusedSessionId` from
- * ForestCanvas so avatars reveal which branch another user popped open (or
- * that they&apos;re browsing only).
+ * `project:{projectId}` stream (derived in `ForestCanvas`).
  */
-export function PresenceBar({ projectId, max = 5 }: Props) {
-  const { focusedSessionId } = useSessionFocus();
-  const users = useProjectPresence(projectId, focusedSessionId);
+export function PresenceBar({ max = 5 }: Props) {
+  const users = useProjectPeers();
 
   if (users.length === 0) {
     return null;
