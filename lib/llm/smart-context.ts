@@ -3,6 +3,7 @@ import "server-only";
 import { generateText } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { messageTextForPrompt } from "@/lib/chat/attachments";
 import { getOpenRouter, getOpenRouterChatModelId } from "@/lib/llm/openrouter";
 
 const MAX_ANCESTOR_NODES = 12;
@@ -73,7 +74,7 @@ async function collectAncestorIds(
 }
 
 function clampContent(text: string, max: number): string {
-  const t = text.replace(/\s+/g, " ").trim();
+  const t = messageTextForPrompt(text).replace(/\s+/g, " ").trim();
   if (t.length <= max) return t;
   return `${t.slice(0, max - 1)}…`;
 }

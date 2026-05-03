@@ -9,6 +9,7 @@ import {
   takeCompleteLines,
   type AgentEvent,
 } from "@/lib/llm/agent-events";
+import type { ChatAttachment } from "@/lib/chat/attachments";
 import type { HighlightRow, ProjectRow, SessionRow, UserRow } from "@/types/db";
 
 /** Thrown by `postJSON` when the server returns a non-2xx. */
@@ -207,7 +208,10 @@ export function forkSession(
   );
 }
 
-export type SendMessageBody = { content: string };
+export type SendMessageBody = {
+  content: string;
+  attachments?: ChatAttachment[];
+};
 
 export type SendMessageOptions = {
   /**

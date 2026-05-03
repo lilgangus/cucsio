@@ -2,6 +2,7 @@
 
 import {
   ArrowDownIcon,
+  PaperclipIcon,
   GitBranchIcon,
   LockIcon,
   SparklesIcon,
@@ -20,8 +21,10 @@ import { toast } from "sonner";
 
 import { UpstreamKeyDetails } from "@/components/chat/UpstreamKeyDetails";
 import { AgenticTimeline } from "@/components/chat/AgenticTimeline";
+import { AttachmentPreviewList } from "@/components/chat/AttachmentPreviewList";
 import { ChatBubble, type ChatBubbleSenderChip } from "@/components/chat/ChatBubble";
 import { PersistedAgentTrace } from "@/components/chat/PersistedAgentTrace";
+import { useChatAttachments } from "@/components/chat/use-chat-attachments";
 import { SelectableMessage } from "@/components/highlight/SelectableMessage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +36,11 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, sendMessage } from "@/lib/api";
 import { useAgentActivity } from "@/lib/agent/agent-activity-context";
+import {
+  CHAT_ATTACHMENT_ACCEPT,
+  describeAttachments,
+  type ChatAttachment,
+} from "@/lib/chat/attachments";
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { useAgentTimeline, safeParseTrace } from "@/lib/llm/agent-timeline-state";
 import type { PresenceState } from "@/lib/realtime/channels";
@@ -137,7 +145,8 @@ export type OverlayProps = {
   onSendNew?: (
     content: string,
     sessionTarget: string | undefined,
-    stream: AssistantStreamCallbacks
+    stream: AssistantStreamCallbacks,
+    attachments?: ChatAttachment[]
   ) => Promise<{ sessionId: string } | null>;
   /** Optional lineage/context box for a forked session or pending fork. */
   forkContext?: {
@@ -252,6 +261,14 @@ export function NodeOverlay(props: OverlayProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** Abort ongoing `/messages` fetch when the user closes the overlay or it unmounts. */
   const sendAbortRef = useRef<AbortController | null>(null);
+  const {
+    attachments,
+    fileInputRef,
+    removeAttachment,
+    clearAttachments,
+    onFileInputChange,
+    onPaste,
+  } = useChatAttachments();
 
   const { openSessionChat } = useSessionFocus();
 
@@ -327,7 +344,7 @@ export function NodeOverlay(props: OverlayProps) {
 
   const submit = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if ((!text && attachments.length === 0) || sending) return;
     if (lockedByOther) return;
 
     sendAbortRef.current?.abort();
@@ -339,7 +356,8 @@ export function NodeOverlay(props: OverlayProps) {
     triggerAgent({
       reason: `chat query: "${text.slice(0, 80)}"`,
       source: "chat",
-      targetPrompt: text,
+      targetPrompt:
+        text || `Uploaded ${describeAttachments(attachments).slice(0, 120)}`,
       context: [
         pendingTarget.trim()
           ? `Pending session target: ${pendingTarget.trim()}`
@@ -353,6 +371,9 @@ export function NodeOverlay(props: OverlayProps) {
         session?.smart_context
           ? `Upstream context: ${session.smart_context.slice(0, 240)}`
           : null,
+        attachments.length
+          ? `User attachments: ${describeAttachments(attachments)}`
+          : null,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -365,18 +386,20 @@ export function NodeOverlay(props: OverlayProps) {
           {
             onAgentEvent: applyAgentEvent,
             signal: ac.signal,
-          }
+          },
+          attachments
         );
         if (!created) return;
         // The parent will swap our `target` to point at the new
         // session id; nothing else for us to do here.
       } else if (sessionId) {
-        await sendMessage(sessionId, { content: text }, {
+        await sendMessage(sessionId, { content: text, attachments }, {
           onAgentEvent: applyAgentEvent,
           signal: ac.signal,
         });
       }
       setDraft("");
+      clearAttachments();
     } catch (err) {
       resetAgentTimeline();
       if (isSendAbortError(err)) return;
@@ -393,6 +416,7 @@ export function NodeOverlay(props: OverlayProps) {
     }
   }, [
     draft,
+    attachments,
     sending,
     lockedByOther,
     isPending,
@@ -406,6 +430,7 @@ export function NodeOverlay(props: OverlayProps) {
     resetAgentTimeline,
     startAgentTimeline,
     triggerAgent,
+    clearAttachments,
   ]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -667,11 +692,35 @@ export function NodeOverlay(props: OverlayProps) {
           }}
           className="flex items-end gap-2 border-t border-border bg-card/80 px-5 py-3"
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={CHAT_ATTACHMENT_ACCEPT}
+            className="hidden"
+            onChange={onFileInputChange}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Attach image or document"
+            disabled={inputDisabled}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <PaperclipIcon className="size-4" />
+          </Button>
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <AttachmentPreviewList
+            attachments={attachments}
+            onRemove={removeAttachment}
+          />
           <Textarea
             ref={inputRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             disabled={inputDisabled}
             placeholder={
               lockedByOther
@@ -683,9 +732,13 @@ export function NodeOverlay(props: OverlayProps) {
             rows={2}
             className="resize-none"
           />
+          </div>
           <Button
             type="submit"
-            disabled={inputDisabled || draft.trim().length === 0}
+            disabled={
+              inputDisabled ||
+              (draft.trim().length === 0 && attachments.length === 0)
+            }
           >
             {sending ? "Sending…" : "Send"}
             <ArrowDownIcon className="rotate-[-90deg]" />

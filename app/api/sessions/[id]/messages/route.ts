@@ -7,6 +7,11 @@ import {
   type AgentEvent,
 } from "@/lib/llm/agent-events";
 import {
+  describeAttachments,
+  normalizeChatAttachments,
+  packMessageContent,
+} from "@/lib/chat/attachments";
+import {
   buildSynthesisAugmentation,
   makeEmitter,
   runDifferentialBrainstorm,
@@ -28,6 +33,7 @@ import type { MessageRow, SessionRow } from "@/types/db";
 
 type Body = {
   content?: unknown;
+  attachments?: unknown;
 };
 
 const UUID_RE =
@@ -84,12 +90,24 @@ export async function POST(req: Request, ctx: Params) {
   }
 
   const content = typeof body.content === "string" ? body.content.trim() : "";
-  if (content.length === 0 || content.length > 8000) {
+  const attachments = normalizeChatAttachments(body.attachments);
+  if (
+    (content.length === 0 && attachments.length === 0) ||
+    content.length > 8000
+  ) {
     return NextResponse.json(
-      { error: "content must be 1-8000 chars" },
+      { error: "content or attachment is required; content max is 8000 chars" },
       { status: 400 }
     );
   }
+  const storedUserContent = packMessageContent(content, attachments);
+  const attachmentSummary = describeAttachments(attachments);
+  const userTurnForPlanning = [
+    content,
+    attachmentSummary ? `Attachments: ${attachmentSummary}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const supabase = getSupabaseServer();
   const now = () => new Date().toISOString();
@@ -162,7 +180,7 @@ export async function POST(req: Request, ctx: Params) {
         session_id: sessionId,
         role: "user",
         author_id: clientId,
-        content,
+        content: storedUserContent,
       })
       .select()
       .single();
@@ -183,7 +201,10 @@ export async function POST(req: Request, ctx: Params) {
     }
 
     if (isFirstUserMessage) {
-      const branchTitle = labelFromFirstUserMessage(content);
+      const branchTitle = labelFromFirstUserMessage(
+        content,
+        attachmentSummary
+      );
       const metaPatch: Record<string, string> = {
         label: branchTitle,
         updated_at: now(),
@@ -192,7 +213,10 @@ export async function POST(req: Request, ctx: Params) {
         metaPatch.session_target = branchTitle;
       }
       if (!(session.summary ?? "").trim()) {
-        metaPatch.summary = previewFromFirstUserMessage(content);
+        metaPatch.summary = previewFromFirstUserMessage(
+          content,
+          attachmentSummary
+        );
       }
       await supabase.from("sessions").update(metaPatch).eq("id", sessionId);
     }
@@ -208,7 +232,9 @@ export async function POST(req: Request, ctx: Params) {
     ).trim();
     const sessionTargetForPrompt =
       freshTarget ||
-      (isFirstUserMessage ? labelFromFirstUserMessage(content) : "") ||
+      (isFirstUserMessage
+        ? labelFromFirstUserMessage(content, attachmentSummary)
+        : "") ||
       (session.session_target ?? "").trim();
 
     const smartContextForPrompt = String(
@@ -277,7 +303,7 @@ export async function POST(req: Request, ctx: Params) {
         emit,
         baseSystem,
         recentMessages: priorAsModel,
-        userTurn: content,
+        userTurn: userTurnForPlanning,
       });
 
       // ---- Phase 2: evidence retrieval ------------------------------
@@ -429,8 +455,11 @@ export async function POST(req: Request, ctx: Params) {
 }
 
 /** Collapse whitespace and cap length for `sessions.label` / `session_target`. */
-function labelFromFirstUserMessage(content: string): string {
-  const line = content.replace(/\s+/g, " ").trim();
+function labelFromFirstUserMessage(
+  content: string,
+  attachmentSummary = ""
+): string {
+  const line = (content || attachmentSummary).replace(/\s+/g, " ").trim();
   if (!line.length) return "Untitled";
   return line.slice(0, 64);
 }
@@ -440,8 +469,12 @@ function labelFromFirstUserMessage(content: string): string {
  * exists (see `/api/summarize`). Uses the first user turn — the same text
  * that started the model call for this session.
  */
-function previewFromFirstUserMessage(content: string, maxLen = 200): string {
-  const line = content.replace(/\s+/g, " ").trim();
+function previewFromFirstUserMessage(
+  content: string,
+  attachmentSummary = "",
+  maxLen = 200
+): string {
+  const line = (content || attachmentSummary).replace(/\s+/g, " ").trim();
   if (!line.length) return "Conversation started";
   return line.length > maxLen ? `${line.slice(0, maxLen - 1)}…` : line;
 }

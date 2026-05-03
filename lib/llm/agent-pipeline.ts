@@ -13,6 +13,7 @@ import {
   getOpenRouter,
   getOpenRouterChatModelId,
 } from "@/lib/llm/openrouter";
+import { messageTextForPrompt } from "@/lib/chat/attachments";
 
 /**
  * Server-side orchestrator for the visible agent timeline.
@@ -75,7 +76,7 @@ export type AgentEvidencePack = {
 type Emit = (event: AgentEvent) => Promise<void>;
 
 function clampSnippet(content: string, max = SNIPPET_CHARS): string {
-  const t = content.replace(/\s+/g, " ").trim();
+  const t = messageTextForPrompt(content).replace(/\s+/g, " ").trim();
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
