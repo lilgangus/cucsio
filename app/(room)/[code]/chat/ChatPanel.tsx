@@ -1,6 +1,10 @@
 "use client";
 
-import { GitBranchPlusIcon, MessageSquareIcon } from "lucide-react";
+import {
+  GitBranchPlusIcon,
+  MessageSquareIcon,
+  PaperclipIcon,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -14,13 +18,19 @@ import { toast } from "sonner";
 
 import { UpstreamKeyDetails } from "@/components/chat/UpstreamKeyDetails";
 import { AgenticTimeline } from "@/components/chat/AgenticTimeline";
+import { AttachmentPreviewList } from "@/components/chat/AttachmentPreviewList";
 import { ChatBubble, type ChatBubbleSenderChip } from "@/components/chat/ChatBubble";
 import { PersistedAgentTrace } from "@/components/chat/PersistedAgentTrace";
+import { useChatAttachments } from "@/components/chat/use-chat-attachments";
 import { SelectableMessage } from "@/components/highlight/SelectableMessage";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, createSession, sendMessage } from "@/lib/api";
 import { useAgentActivity } from "@/lib/agent/agent-activity-context";
+import {
+  CHAT_ATTACHMENT_ACCEPT,
+  describeAttachments,
+} from "@/lib/chat/attachments";
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { useAgentTimeline, safeParseTrace } from "@/lib/llm/agent-timeline-state";
 import { useSessionFocus } from "@/lib/realtime/session-focus-context";
@@ -132,10 +142,18 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     reset: resetAgentTimeline,
     start: startAgentTimeline,
   } = useAgentTimeline();
-  const { trigger: triggerAgent } = useAgentActivity();
+  const { trigger: triggerAgent, pinChatFindings } = useAgentActivity();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
+  const {
+    attachments,
+    fileInputRef,
+    removeAttachment,
+    clearAttachments,
+    onFileInputChange,
+    onPaste,
+  } = useChatAttachments();
 
   useEffect(() => {
     return () => sendAbortRef.current?.abort();
@@ -182,7 +200,7 @@ export function ChatPanel({ roomCode, projectId }: Props) {
 
   const submit = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending || !sessionId) return;
+    if ((!text && attachments.length === 0) || sending || !sessionId) return;
     if (lockedByOther) return;
 
     sendAbortRef.current?.abort();
@@ -191,28 +209,46 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     setSending(true);
     resetAgentTimeline();
     startAgentTimeline();
+    const attachmentSummary = describeAttachments(attachments);
+    const agentContext = [
+      activeSession?.session_target
+        ? `Session target: ${activeSession.session_target}`
+        : null,
+      activeSession?.label ? `Session label: ${activeSession.label}` : null,
+      activeSession?.smart_context
+        ? `Upstream context: ${activeSession.smart_context.slice(0, 240)}`
+        : null,
+      attachments.length ? `User attachments: ${attachmentSummary}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    let assistantAnswer = "";
     triggerAgent({
       reason: `chat query: "${text.slice(0, 80)}"`,
       source: "chat",
-      targetPrompt: text,
-      context: [
-        activeSession?.session_target
-          ? `Session target: ${activeSession.session_target}`
-          : null,
-        activeSession?.label ? `Session label: ${activeSession.label}` : null,
-        activeSession?.smart_context
-          ? `Upstream context: ${activeSession.smart_context.slice(0, 240)}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      targetPrompt:
+        text || `Uploaded ${attachmentSummary.slice(0, 120)}`,
+      context: agentContext,
     });
     try {
-      await sendMessage(sessionId, { content: text }, {
-        onAgentEvent: applyAgentEvent,
+      await sendMessage(sessionId, { content: text, attachments }, {
+        onAgentEvent: (event) => {
+          applyAgentEvent(event);
+          if (event.type === "delta" && event.phase === "synthesis") {
+            assistantAnswer += event.text;
+          }
+        },
         signal: ac.signal,
       });
+      if (assistantAnswer.trim()) {
+        void pinChatFindings({
+          userMessage: text || `Uploaded ${attachmentSummary}`,
+          assistantAnswer,
+          context: agentContext,
+        });
+      }
       setDraft("");
+      clearAttachments();
     } catch (err) {
       resetAgentTimeline();
       if (isSendAbortError(err)) return;
@@ -231,6 +267,7 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     }
   }, [
     draft,
+    attachments,
     sending,
     sessionId,
     lockedByOther,
@@ -239,6 +276,8 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     resetAgentTimeline,
     startAgentTimeline,
     triggerAgent,
+    pinChatFindings,
+    clearAttachments,
   ]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -411,11 +450,35 @@ export function ChatPanel({ roomCode, projectId }: Props) {
             void submit();
           }}
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={CHAT_ATTACHMENT_ACCEPT}
+            className="hidden"
+            onChange={onFileInputChange}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Attach image or document"
+            disabled={inputDisabled || emptyProject}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <PaperclipIcon className="size-4" />
+          </Button>
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <AttachmentPreviewList
+            attachments={attachments}
+            onRemove={removeAttachment}
+          />
           <Textarea
             ref={inputRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             disabled={inputDisabled || emptyProject}
             placeholder={
               emptyProject
@@ -427,10 +490,13 @@ export function ChatPanel({ roomCode, projectId }: Props) {
             rows={2}
             className="resize-none"
           />
+          </div>
           <Button
             type="submit"
             disabled={
-              inputDisabled || emptyProject || draft.trim().length === 0
+              inputDisabled ||
+              emptyProject ||
+              (draft.trim().length === 0 && attachments.length === 0)
             }
           >
             {sending ? "Sending…" : "Send"}

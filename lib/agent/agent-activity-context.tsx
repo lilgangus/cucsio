@@ -12,15 +12,11 @@ import {
 } from "react";
 
 import type {
+  AgentChatFindingsPayload,
+  AgentChatFindingsResponse,
   VisualAgentPlan,
   VisualAgentPlanResponse,
 } from "@/lib/agent/visual-plan";
-
-/**
- * Local visual agent state for the right-side agent tree. It is intentionally
- * synthetic, but it is driven by real user intent: the latest chat message,
- * search query, edited session target, and nearby branch goals.
- */
 
 export type AgentNodeStatus =
   | "considering"
@@ -41,8 +37,7 @@ export type AgentNode = {
 
 export type AgentHighlight = {
   id: string;
-  label: string;
-  reason: string;
+  summary: string;
   sourceNodeId: string | null;
   createdAt: number;
 };
@@ -71,6 +66,7 @@ type AgentActivityValue = {
   statusText: string;
   cycleCount: number;
   trigger: (t: AgentTrigger) => void;
+  pinChatFindings: (payload: AgentChatFindingsPayload) => Promise<void>;
   pinHighlight: (h: Omit<AgentHighlight, "id" | "createdAt">) => void;
   unpinHighlight: (id: string) => void;
 };
@@ -79,46 +75,8 @@ const AgentActivityContext = createContext<AgentActivityValue | undefined>(
   undefined
 );
 
-const TOOL_STEPS = [
-  {
-    label: "Tool: fetch_session_digests",
-    detail: "Survey session targets, summaries, and recent activity.",
-  },
-  {
-    label: "Tool: read_recent_messages",
-    detail: "Open the most relevant branches for fresh evidence.",
-  },
-  {
-    label: "Tool: pull_pinned_highlights",
-    detail: "Check what the team already marked as important.",
-  },
-];
-
-const REASONING_STEPS = [
-  {
-    label: "Clarify success criteria",
-    detail: "Turn the prompt into a concrete answer target.",
-  },
-  {
-    label: "Compare sibling goals",
-    detail: "Look for nearby branches that may answer the same need.",
-  },
-  {
-    label: "Separate facts from guesses",
-    detail: "Flag any assumption that needs evidence before synthesis.",
-  },
-  {
-    label: "Choose next action",
-    detail: "Decide whether to answer, ask, fork, or fetch more context.",
-  },
-  {
-    label: "Prepare cited synthesis",
-    detail: "Shape the final response around session-backed evidence.",
-  },
-];
-
 const STEP_MS = 700;
-const SPINUP_MS = 500;
+const SPINUP_MS = 450;
 const SETTLE_MS = 600;
 
 type Action =
@@ -141,53 +99,17 @@ function shorten(value: string, max: number): string {
   return `${t.slice(0, Math.max(0, max - 3)).trim()}...`;
 }
 
-function uniquePush(
-  out: string[],
-  value: string | undefined | null,
-  max = 6
-) {
-  const t = clean(value)
-    .replace(/^[-*]\s*/, "")
-    .replace(/^(target|query|prompt|context|branch|session)\s*:\s*/i, "")
-    .trim();
-  if (t.length < 3) return;
-  const key = t.toLowerCase();
-  if (out.some((v) => v.toLowerCase() === key)) return;
-  out.push(t);
-  if (out.length > max) out.length = max;
-}
+const PROCESS_FINDING_RE =
+  /\b(active context|branch|checking|citation|completes|displayed|grounded synthesis|session|status|target|tool|travers|verification|visual|workflow)\b/i;
 
-function extractSignals(trigger: AgentTrigger): string[] {
-  const out: string[] = [];
-
-  uniquePush(out, trigger.targetPrompt);
-
-  const quoted = trigger.reason.match(/"([^"]{3,160})"/)?.[1];
-  uniquePush(out, quoted);
-
-  const reasonTail = trigger.reason
-    .replace(/^(search query|chat query|user message|session target updated)\s*:?\s*/i, "")
-    .trim();
-  uniquePush(out, reasonTail);
-
-  for (const line of (trigger.context ?? "").split(/\n|;/g)) {
-    uniquePush(out, line);
-  }
-
-  if (out.length === 0) {
-    uniquePush(out, "current project target prompt");
-  }
-  return out;
-}
-
-function sourcePrefix(source: AgentTriggerSource | undefined): string {
-  if (source === "search") return "Search target";
-  if (source === "chat") return "Chat ask";
-  if (source === "prompt") return "Prompt edit";
-  return "Tree update";
+function isUsefulHighlight(summary: string): boolean {
+  const text = clean(summary);
+  if (!text || PROCESS_FINDING_RE.test(text)) return false;
+  return text.split(/\s+/).length >= 4;
 }
 
 function makeNode(args: {
+  id?: string;
   parentId: string | null;
   depth: number;
   col: number;
@@ -195,7 +117,7 @@ function makeNode(args: {
   detail?: string;
 }): AgentNode {
   return {
-    id: uid("a"),
+    id: args.id ?? uid("a"),
     parentId: args.parentId,
     col: args.col,
     depth: args.depth,
@@ -206,112 +128,61 @@ function makeNode(args: {
   };
 }
 
-function buildSyntheticTree(trigger: AgentTrigger): AgentNode[] {
-  const signals = extractSignals(trigger);
-  const primary = signals[0] ?? "current target prompt";
-  const root = makeNode({
-    parentId: null,
-    depth: 0,
-    col: 0,
-    label: `${sourcePrefix(trigger.source)}: ${shorten(primary, 46)}`,
-    detail: `Triggered by ${trigger.reason}`,
-  });
+function buildTreeFromPlan(plan: VisualAgentPlan): AgentNode[] {
+  const idByKey = new Map(plan.tree.map((n) => [n.key, uid("a")] as const));
+  const byKey = new Map(plan.tree.map((n) => [n.key, n] as const));
+  const depthMemo = new Map<string, number>();
 
-  const branchSpecs = [
-    {
-      label: `Intent: ${shorten(primary, 52)}`,
-      detail: "Keep the traversal centered on what the user is trying to do.",
-    },
-    ...TOOL_STEPS,
-    {
-      label: signals[1]
-        ? `Related goal: ${shorten(signals[1], 48)}`
-        : "Find the missing branch",
-      detail: signals[1]
-        ? "Compare a nearby branch target against the latest ask."
-        : "Look for the branch that should be opened or created next.",
-    },
-  ];
+  const depthFor = (key: string, seen = new Set<string>()): number => {
+    const memo = depthMemo.get(key);
+    if (memo != null) return memo;
+    if (seen.has(key)) return 0;
+    const node = byKey.get(key);
+    if (!node?.parentKey) {
+      depthMemo.set(key, 0);
+      return 0;
+    }
+    seen.add(key);
+    const depth = Math.min(2, depthFor(node.parentKey, seen) + 1);
+    depthMemo.set(key, depth);
+    return depth;
+  };
 
-  const branchCount = 3;
-  const branches = branchSpecs.slice(0, branchCount).map((spec, i) =>
-    makeNode({
-      parentId: root.id,
-      depth: 1,
-      col: i - (branchCount - 1) / 2,
-      label: spec.label,
-      detail: spec.detail,
-    })
-  );
+  const withDepth = plan.tree.map((node, index) => ({
+    node,
+    depth: index === 0 ? 0 : depthFor(node.key),
+  }));
+  const byDepth = new Map<number, typeof withDepth>();
+  for (const item of withDepth) {
+    const bucket = byDepth.get(item.depth) ?? [];
+    bucket.push(item);
+    byDepth.set(item.depth, bucket);
+  }
 
-  const leaves: AgentNode[] = [];
-  const leafSpecs = [
-    {
-      label: "Evidence to cite",
-      detail: signals[2] ?? "Session IDs, branch summaries, and highlights.",
-    },
-    {
-      label: "Open uncertainty",
-      detail:
-        signals[1] ??
-        "What extra context would change the answer or next branch?",
-    },
-    {
-      label: "Next response shape",
-      detail: "Answer directly, then include what to inspect next.",
-    },
-  ];
+  const colByKey = new Map<string, number>();
+  for (const [depth, bucket] of byDepth.entries()) {
+    if (depth === 0) {
+      for (const item of bucket) colByKey.set(item.node.key, 0);
+      continue;
+    }
+    bucket.forEach((item, i) => {
+      colByKey.set(item.node.key, i - (bucket.length - 1) / 2);
+    });
+  }
 
-  branches.slice(0, 3).forEach((branch, i) => {
-    const spec = leafSpecs[i % leafSpecs.length];
-    leaves.push(
-      makeNode({
-        parentId: branch.id,
-        depth: 2,
-        col: branch.col,
-        label: spec.label,
-        detail: spec.detail,
-      })
-    );
-  });
-
-  return [root, ...branches, ...leaves];
-}
-
-function buildLlmTree(trigger: AgentTrigger, plan: VisualAgentPlan): AgentNode[] {
-  const signals = extractSignals(trigger);
-  const primary = signals[0] ?? "current target prompt";
-  const root = makeNode({
-    parentId: null,
-    depth: 0,
-    col: 0,
-    label: `LLM traversal: ${shorten(primary, 42)}`,
-    detail: plan.planSummary,
-  });
-
-  const firstTier = plan.steps.slice(0, 3);
-  const branches = firstTier.map((step, i) =>
-    makeNode({
-      parentId: root.id,
-      depth: 1,
-      col: i - (firstTier.length - 1) / 2,
-      label: step.label,
-      detail: step.detail,
-    })
-  );
-
-  const leaves = plan.steps.slice(3).map((step, i) => {
-    const parent = branches[i % Math.max(1, branches.length)] ?? root;
+  return withDepth.map(({ node, depth }, index) => {
+    const id = idByKey.get(node.key) ?? uid("a");
+    const parentId =
+      index === 0 || !node.parentKey ? null : idByKey.get(node.parentKey) ?? null;
     return makeNode({
-      parentId: parent.id,
-      depth: parent === root ? 1 : 2,
-      col: parent.col,
-      label: step.label,
-      detail: step.detail,
+      id,
+      parentId,
+      depth,
+      col: colByKey.get(node.key) ?? 0,
+      label: node.summary,
+      detail: node.detail,
     });
   });
-
-  return [root, ...branches, ...leaves];
 }
 
 function findingsFromPlan(
@@ -319,10 +190,9 @@ function findingsFromPlan(
   nodes: AgentNode[]
 ): AgentHighlight[] {
   const sourceNodes = nodes.filter((n) => n.depth > 0);
-  return plan.findings.slice(0, 3).map((finding, i) => ({
+  return plan.findings.slice(0, 4).map((finding, i) => ({
     id: uid("h"),
-    label: finding.label,
-    reason: finding.reason,
+    summary: finding.summary,
     sourceNodeId: sourceNodes[i % Math.max(1, sourceNodes.length)]?.id ?? null,
     createdAt: Date.now() + i,
   }));
@@ -330,20 +200,12 @@ function findingsFromPlan(
 
 async function requestLlmPlan(
   trigger: AgentTrigger,
-  treeSnapshot: AgentNode[],
   signal: AbortSignal
 ): Promise<VisualAgentPlan | null> {
   const res = await fetch("/api/agent/visual-plan", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      trigger,
-      treeSnapshot: treeSnapshot.map((n) => ({
-        label: n.label,
-        detail: n.detail,
-        depth: n.depth,
-      })),
-    }),
+    body: JSON.stringify({ trigger }),
     signal,
   });
   if (!res.ok) return null;
@@ -351,119 +213,26 @@ async function requestLlmPlan(
   return payload.plan ?? null;
 }
 
-function buildExpansionNode(
-  parent: AgentNode,
-  signals: string[],
-  existing: AgentNode[]
-): AgentNode | null {
-  if (parent.depth >= 2) return null;
-  if (existing.some((n) => n.parentId === parent.id)) return null;
-
-  const candidate = REASONING_STEPS[
-    Math.floor(Math.random() * REASONING_STEPS.length)
-  ];
-  const signal = signals[(parent.depth + existing.length) % signals.length];
-  return makeNode({
-    parentId: parent.id,
-    depth: parent.depth + 1,
-    col: parent.col,
-    label: candidate.label,
-    detail: signal
-      ? `${candidate.detail} Focus: ${shorten(signal, 96)}`
-      : candidate.detail,
+async function requestChatFindings(
+  payload: AgentChatFindingsPayload,
+  signal?: AbortSignal
+): Promise<AgentHighlight[]> {
+  const res = await fetch("/api/agent/findings", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ payload }),
+    signal,
   });
-}
-
-function buildHighlightBatch(
-  trigger: AgentTrigger,
-  nodes: AgentNode[]
-): AgentHighlight[] {
-  const signals = extractSignals(trigger);
-  const primary = signals[0] ?? "current target prompt";
-  const secondary = signals[1] ?? signals[2] ?? primary;
-  const confirmed = nodes.filter(
-    (n) => n.status === "confirmed" && n.depth > 0
-  );
-  const dismissed = nodes.filter(
-    (n) => n.status === "dismissed" && n.depth > 0
-  );
-  const source =
-    confirmed[Math.floor(Math.random() * Math.max(1, confirmed.length))] ??
-    nodes.find((n) => n.depth > 0) ??
-    null;
-  const secondSource =
-    confirmed.find((n) => n.id !== source?.id) ??
-    nodes.find((n) => n.depth > 0 && n.id !== source?.id) ??
-    source;
-
-  const candidates = [
-    {
-      label: "Plan: run digests -> messages -> highlights",
-      reason:
-        "The agent chose a visible three-tool loop before synthesizing an answer.",
-    },
-    {
-      label: source
-        ? `Finding: strongest path is "${shorten(source.label, 54)}"`
-        : "Finding: traversal produced one promising path",
-      reason: source?.detail
-        ? `Carry this into synthesis: ${shorten(source.detail, 96)}`
-        : "The agent found a branch worth carrying into synthesis.",
-    },
-    {
-      label: `Gap: verify "${shorten(secondary, 58)}"`,
-      reason:
-        "This is the most useful uncertainty to check before committing to an answer.",
-    },
-    {
-      label: `Next fork: test "${shorten(primary, 56)}"`,
-      reason:
-        "A focused branch would let the team isolate this ask from broader context.",
-    },
-    {
-      label:
-        dismissed.length > 0
-          ? `Pruned: ${dismissed.length} weak path${
-              dismissed.length === 1 ? "" : "s"
-            }`
-          : "Critique: no obvious dead end yet",
-      reason:
-        dismissed[0]?.label ??
-        "The agent kept all current branches alive until more evidence appears.",
-    },
-    {
-      label: secondSource
-        ? `Synthesis anchor: ${shorten(secondSource.label, 56)}`
-        : "Synthesis anchor: branch evidence first",
-      reason: secondSource?.detail
-        ? shorten(secondSource.detail, 110)
-        : "The final answer should point back to concrete branch evidence.",
-    },
-    {
-      label: "Decision: cite sessions before summarizing",
-      reason:
-        "The agent will prioritize grounded references over a broad generic answer.",
-    },
-    {
-      label: "Loop: plan -> inspect -> critique -> pin",
-      reason:
-        "This run produced a visible work loop: traverse the tree, expand useful paths, prune weak ones, then pin findings.",
-    },
-  ];
-
-  const shuffled = candidates
-    .map((candidate) => ({ candidate, score: Math.random() }))
-    .sort((a, b) => a.score - b.score)
-    .map(({ candidate }) => candidate)
-    .slice(0, 2);
-
-  return shuffled.map((choice, i) => ({
-    id: uid("h"),
-    label: choice.label,
-    reason: choice.reason,
-    sourceNodeId: i === 0 ? source?.id ?? null : secondSource?.id ?? null,
-    createdAt: Date.now() + i,
-  }));
+  if (!res.ok) return [];
+  const json = (await res.json()) as Partial<AgentChatFindingsResponse>;
+  return (json.findings ?? [])
+    .filter((f) => isUsefulHighlight(f.summary))
+    .map((finding, i) => ({
+      id: uid("h"),
+      summary: finding.summary,
+      sourceNodeId: null,
+      createdAt: Date.now() + i,
+    }));
 }
 
 export function AgentActivityProvider({ children }: { children: ReactNode }) {
@@ -482,15 +251,10 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
   const phaseRef = useRef<AgentPhase>("idle");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dispatchRef = useRef<(action: Action) => void>(() => {});
-  const activeTriggerRef = useRef<AgentTrigger>({
-    reason: "initial idle",
-    source: "tree",
-  });
-  const activeSignalsRef = useRef<string[]>(["current target prompt"]);
-  const lastTriggerRef = useRef<{ key: string; at: number } | null>(null);
   const llmCycleRef = useRef(0);
   const llmAbortRef = useRef<AbortController | null>(null);
   const llmFindingsRef = useRef<AgentHighlight[]>([]);
+  const lastTriggerRef = useRef<{ key: string; at: number } | null>(null);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -503,38 +267,65 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const startLlmPlan = useCallback(
-    (triggerForPlan: AgentTrigger, cycle: number, snapshot: AgentNode[]) => {
-      llmAbortRef.current?.abort();
-      const ac = new AbortController();
-      llmAbortRef.current = ac;
+  const startLlmPlan = useCallback((triggerForPlan: AgentTrigger, cycle: number) => {
+    llmAbortRef.current?.abort();
+    const ac = new AbortController();
+    llmAbortRef.current = ac;
 
-      void (async () => {
-        try {
-          const plan = await requestLlmPlan(
-            triggerForPlan,
-            snapshot,
-            ac.signal
-          );
-          if (!plan || ac.signal.aborted || llmCycleRef.current !== cycle) {
-            return;
+    void (async () => {
+      try {
+        const plan = await requestLlmPlan(triggerForPlan, ac.signal);
+        if (!plan || ac.signal.aborted || llmCycleRef.current !== cycle) {
+          if (!ac.signal.aborted && llmCycleRef.current === cycle) {
+            setStatusText(
+              traversalNodesRef.current.length > 0
+                ? "Model did not return a new tree - keeping the last run visible."
+                : "Model did not return a content tree."
+            );
+            timerRef.current = setTimeout(() => {
+              setPhase("idle");
+              setStatusText(
+                traversalNodesRef.current.length > 0
+                  ? "Last agent tree remains visible."
+                  : "Agent idle - waiting for a target prompt."
+              );
+            }, SETTLE_MS);
           }
-
-          const modelNodes = buildLlmTree(triggerForPlan, plan);
-          llmFindingsRef.current = findingsFromPlan(plan, modelNodes);
-          traversalNodesRef.current = modelNodes;
-          visitQueueRef.current = modelNodes.map((n) => n.id);
-          setNodes(modelNodes);
-          setCursorNodeId(null);
-          setPhase("spinning_up");
-          setStatusText(`LLM plan loaded - ${shorten(plan.planSummary, 80)}`);
-        } catch (err) {
-          if (err instanceof DOMException && err.name === "AbortError") return;
+          return;
         }
-      })();
-    },
-    []
-  );
+
+        const modelNodes = buildTreeFromPlan(plan);
+        const findings =
+          triggerForPlan.source === "chat" ? [] : findingsFromPlan(plan, modelNodes);
+        traversalNodesRef.current = modelNodes;
+        visitQueueRef.current = modelNodes.map((n) => n.id);
+        llmFindingsRef.current = findings;
+        setNodes(modelNodes);
+        setCursorNodeId(null);
+        setPhase("spinning_up");
+        setStatusText(shorten(plan.planSummary, 110));
+        timerRef.current = setTimeout(() => {
+          dispatchRef.current({ kind: "advance" });
+        }, SPINUP_MS);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (llmCycleRef.current !== cycle) return;
+        setStatusText(
+          traversalNodesRef.current.length > 0
+            ? "Model tree failed - keeping the last completed tree."
+            : "Model content tree failed before traversal."
+        );
+        timerRef.current = setTimeout(() => {
+          setPhase("idle");
+          setStatusText(
+            traversalNodesRef.current.length > 0
+              ? "Last agent tree remains visible."
+              : "Agent idle - waiting for a target prompt."
+          );
+        }, SETTLE_MS);
+      }
+    })();
+  }, []);
 
   const dispatch = useCallback(
     (action: Action) => {
@@ -542,23 +333,19 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       const recurse = (next: Action) => dispatchRef.current(next);
 
       if (action.kind === "spinup") {
-        activeTriggerRef.current = action.trigger;
-        activeSignalsRef.current = extractSignals(action.trigger);
-        llmFindingsRef.current = [];
-        const fresh = buildSyntheticTree(action.trigger);
         const cycle = llmCycleRef.current + 1;
         llmCycleRef.current = cycle;
-        traversalNodesRef.current = fresh;
-        visitQueueRef.current = fresh.map((n) => n.id);
-        setNodes(fresh);
+        llmFindingsRef.current = [];
+        visitQueueRef.current = [];
         setCursorNodeId(null);
         setPhase("spinning_up");
-        setStatusText(`Agent planning - ${action.trigger.reason}`);
+        setStatusText(
+          traversalNodesRef.current.length > 0
+            ? "Nemotron is generating a new tree - previous run stays pinned."
+            : "Nemotron is generating a content tree..."
+        );
         setCycleCount((c) => c + 1);
-        timerRef.current = setTimeout(() => {
-          recurse({ kind: "advance" });
-        }, SPINUP_MS);
-        startLlmPlan(action.trigger, cycle, fresh);
+        startLlmPlan(action.trigger, cycle);
         return;
       }
 
@@ -590,40 +377,13 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
 
         timerRef.current = setTimeout(() => {
           const decision: AgentNodeStatus =
-            Math.random() < 0.68 ? "confirmed" : "dismissed";
-          let nextNodes = traversalNodesRef.current.map((n) =>
+            Math.random() < 0.76 ? "confirmed" : "dismissed";
+          traversalNodesRef.current = traversalNodesRef.current.map((n) =>
             n.id === nextId
               ? { ...n, status: decision, visiting: false }
               : n
           );
-
-          const resolved = nextNodes.find((n) => n.id === nextId);
-          if (
-            resolved &&
-            decision === "confirmed" &&
-            Math.random() < 0.42
-          ) {
-            const expansion = buildExpansionNode(
-              resolved,
-              activeSignalsRef.current,
-              nextNodes
-            );
-            if (expansion) {
-              nextNodes = [...nextNodes, expansion];
-              visitQueueRef.current.push(expansion.id);
-              setStatusText(`Expanded: ${resolved.label}`);
-            }
-          }
-
-          if (resolved && decision === "dismissed" && Math.random() < 0.35) {
-            const hasChildren = nextNodes.some((n) => n.parentId === nextId);
-            if (resolved.depth > 0 && !hasChildren) {
-              nextNodes = nextNodes.filter((n) => n.id !== nextId);
-            }
-          }
-
-          traversalNodesRef.current = nextNodes;
-          setNodes(nextNodes);
+          setNodes(traversalNodesRef.current);
           recurse({ kind: "advance" });
         }, STEP_MS);
         return;
@@ -631,20 +391,14 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
 
       if (action.kind === "highlight") {
         setPhase("highlighting");
-        setStatusText("Pinning plans, gaps, and findings...");
-        const nextBatch =
-          llmFindingsRef.current.length > 0
-            ? llmFindingsRef.current
-            : buildHighlightBatch(
-                activeTriggerRef.current,
-                traversalNodesRef.current
-              );
+        setStatusText("Pinning generated findings...");
+        const nextBatch = llmFindingsRef.current;
         llmFindingsRef.current = [];
         setHighlights((prev) => {
-          const seen = new Set(prev.map((h) => clean(h.label).toLowerCase()));
+          const seen = new Set(prev.map((h) => clean(h.summary).toLowerCase()));
           const fresh = nextBatch.filter((h) => {
-            const key = clean(h.label).toLowerCase();
-            if (seen.has(key)) return false;
+            const key = clean(h.summary).toLowerCase();
+            if (!key || seen.has(key)) return false;
             seen.add(key);
             return true;
           });
@@ -660,14 +414,14 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       if (action.kind === "settle") {
         setPhase("settling");
         setCursorNodeId(null);
-        setStatusText("Synthesis path ready. Standing by.");
+        setStatusText("Generated content tree complete.");
         timerRef.current = setTimeout(() => {
           const queued = triggerQueueRef.current.shift();
           if (queued) {
             recurse({ kind: "spinup", trigger: queued });
           } else {
             setPhase("idle");
-            setStatusText("Agent idle - waiting for a target prompt.");
+            setStatusText("Run complete - agent tree remains visible.");
           }
         }, SETTLE_MS);
       }
@@ -699,6 +453,32 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       dispatch({ kind: "spinup", trigger: t });
     },
     [dispatch]
+  );
+
+  const pinChatFindings = useCallback(
+    async (payload: AgentChatFindingsPayload) => {
+      const ac = new AbortController();
+      try {
+        const nextBatch = await requestChatFindings(payload, ac.signal);
+        if (nextBatch.length === 0) return;
+        setHighlights((prev) => {
+          const seen = new Set(prev.map((h) => clean(h.summary).toLowerCase()));
+          const fresh = nextBatch.filter((h) => {
+            const key = clean(h.summary).toLowerCase();
+            if (!key || seen.has(key) || !isUsefulHighlight(h.summary)) {
+              return false;
+            }
+            seen.add(key);
+            return true;
+          });
+          return [...fresh, ...prev].slice(0, 6);
+        });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.warn("[agent] answer-grounded findings failed", err);
+      }
+    },
+    []
   );
 
   const pinHighlight = useCallback(
@@ -739,6 +519,7 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       cycleCount,
       trigger,
       pinHighlight,
+      pinChatFindings,
       unpinHighlight,
     }),
     [
@@ -750,6 +531,7 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       cycleCount,
       trigger,
       pinHighlight,
+      pinChatFindings,
       unpinHighlight,
     ]
   );

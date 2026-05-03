@@ -224,17 +224,7 @@ function AgentNodeCard({
             className="pointer-events-none absolute inset-0 rounded-xl bg-amber-300/20 motion-safe:animate-pulse dark:bg-amber-400/20"
           />
         ) : null}
-        <div className="flex items-center justify-between gap-1.5">
-          <span
-            className={cn(
-              "truncate text-[10px] font-semibold uppercase tracking-wide",
-              node.depth === 0
-                ? "text-violet-700 dark:text-violet-200"
-                : "text-muted-foreground"
-            )}
-          >
-            {node.depth === 0 ? "Plan" : node.depth === 1 ? "Probe" : "Leaf"}
-          </span>
+        <div className="flex items-center justify-end">
           <StatusChip status={node.status} />
         </div>
         <p
@@ -357,7 +347,13 @@ export function AgentTree({ widthHint = 720 }: { widthHint?: number }) {
   );
 
   const cursorPos = cursorNodeId ? layout.positions[cursorNodeId] : null;
-  const phaseCopy = PHASE_COPY[phase];
+  const phaseCopy =
+    phase === "idle" && nodes.length > 0
+      ? {
+          label: "Run complete",
+          tone: "text-emerald-600 dark:text-emerald-300",
+        }
+      : PHASE_COPY[phase];
 
   return (
     <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">

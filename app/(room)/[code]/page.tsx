@@ -2,10 +2,9 @@ import { notFound } from "next/navigation";
 
 import { getSupabaseServer } from "@/lib/supabase/server";
 
-import { AgentSection } from "./agent/AgentSection";
 import { ChatPanel } from "./chat/ChatPanel";
-import { ForestCanvas } from "./forest/ForestCanvas";
 import { RightPanel } from "./right/RightPanel";
+import { RoomResizableLayout } from "./RoomResizableLayout";
 
 type Props = {
   params: Promise<{ code: string }>;
@@ -33,36 +32,19 @@ export default async function RoomPage({ params, searchParams }: Props) {
   const projectId = project.id as string;
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-3 gap-0">
-      <div className="relative col-span-2 flex min-h-0 flex-col overflow-hidden border-r border-border">
-        {treeEnabled ? (
-          <div className="flex min-h-0 flex-1 flex-row">
-            <div className="relative flex min-w-0 flex-[5] flex-col overflow-hidden">
-              <ForestCanvas projectId={projectId} />
-            </div>
-
-            <div className="relative shrink-0">
-              <div className="h-full w-[3px] bg-gradient-to-b from-violet-500/20 via-violet-500/70 to-fuchsia-500/20" />
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 select-none">
-                <span className="inline-flex rotate-90 items-center gap-1.5 rounded-full border border-violet-400/60 bg-card px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.22em] text-violet-700 shadow-sm dark:border-violet-300/40 dark:text-violet-200">
-                  <span className="size-1.5 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500" />
-                  agent
-                </span>
-              </div>
-            </div>
-
-            <div className="relative flex min-w-[400px] flex-[3] flex-col overflow-hidden bg-gradient-to-r from-violet-50/30 via-background to-background dark:from-violet-950/20">
-              <AgentSection projectId={projectId} />
-            </div>
+    <div className="flex min-h-0 flex-1">
+      {treeEnabled ? (
+        <RoomResizableLayout projectId={projectId} />
+      ) : (
+        <>
+          <div className="relative flex min-h-0 flex-[2] flex-col overflow-hidden border-r border-border">
+            <ChatPanel roomCode={normalized} projectId={projectId} />
           </div>
-        ) : (
-          <ChatPanel roomCode={normalized} projectId={projectId} />
-        )}
-      </div>
-
-      <aside className="col-span-1 flex min-h-0 flex-col bg-card">
-        <RightPanel projectId={projectId} />
-      </aside>
+          <aside className="flex min-h-0 flex-1 flex-col bg-card">
+            <RightPanel projectId={projectId} />
+          </aside>
+        </>
+      )}
     </div>
   );
 }

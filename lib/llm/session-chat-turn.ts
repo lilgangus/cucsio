@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai";
 
+import { messageContentToModelContent } from "@/lib/chat/attachments";
 import type { MessageRow } from "@/types/db";
 
 /** Max prior rows (including the new user line) sent to the model. */
@@ -27,6 +28,7 @@ export function buildChatSystemPrompt(
   const parts: string[] = [
     "You are a helpful assistant in a collaborative team workspace with a shared fork-tree of chats.",
     "Answer clearly and concisely unless the user asks for depth.",
+    "When the user attaches images or documents, inspect the attachment content directly and reference the relevant visual or document details in your answer.",
     "Format your replies using GitHub-flavored Markdown when it helps: headings, **bold**, *italic*, bullet/numbered lists, `inline code`, fenced ``` code blocks ```, and tables. Use structure when it adds clarity.",
   ];
 
@@ -63,7 +65,7 @@ export function messageRowsToModelMessages(rows: MessageRow[]): ModelMessage[] {
   for (const m of rows) {
     if (m.is_deleted) continue;
     if (m.role === "user") {
-      out.push({ role: "user", content: m.content });
+      out.push({ role: "user", content: messageContentToModelContent(m.content) });
     } else if (m.role === "assistant") {
       out.push({ role: "assistant", content: m.content });
     }

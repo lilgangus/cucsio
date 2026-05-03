@@ -5,22 +5,33 @@ export type VisualAgentTriggerPayload = {
   source?: "chat" | "search" | "tree" | "prompt";
 };
 
-export type VisualAgentPlanStep = {
-  label: string;
+export type VisualAgentTreeNode = {
+  key: string;
+  parentKey: string | null;
+  summary: string;
   detail: string;
 };
 
 export type VisualAgentFinding = {
-  label: string;
-  reason: string;
+  summary: string;
 };
 
 export type VisualAgentPlan = {
   planSummary: string;
-  steps: VisualAgentPlanStep[];
+  tree: VisualAgentTreeNode[];
   findings: VisualAgentFinding[];
 };
 
 export type VisualAgentPlanResponse = {
   plan: VisualAgentPlan;
+};
+
+export type AgentChatFindingsPayload = {
+  userMessage: string;
+  assistantAnswer: string;
+  context?: string;
+};
+
+export type AgentChatFindingsResponse = {
+  findings: VisualAgentFinding[];
 };

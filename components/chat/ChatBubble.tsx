@@ -1,4 +1,6 @@
+import { AttachmentPreviewList } from "@/components/chat/AttachmentPreviewList";
 import { MarkdownContent } from "@/components/chat/MarkdownContent";
+import { unpackMessageContent } from "@/lib/chat/attachments";
 import { cn } from "@/lib/utils";
 
 export type ChatBubbleSenderChip = { label: string; color: string };
@@ -13,6 +15,9 @@ export function ChatBubble({
   senderChip: ChatBubbleSenderChip | null;
 }) {
   const isUser = role === "user";
+  const userContent = isUser
+    ? unpackMessageContent(content)
+    : { text: content, attachments: [] };
   return (
     <div
       className={cn(
@@ -39,7 +44,15 @@ export function ChatBubble({
         )}
       >
         {isUser ? (
-          content
+          <div className="flex flex-col gap-2">
+            {userContent.attachments.length > 0 ? (
+              <AttachmentPreviewList
+                attachments={userContent.attachments}
+                tone="message"
+              />
+            ) : null}
+            {userContent.text ? <span>{userContent.text}</span> : null}
+          </div>
         ) : (
           <MarkdownContent content={content} />
         )}

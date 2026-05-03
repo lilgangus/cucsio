@@ -17,6 +17,7 @@ import {
   forkSession,
   sendMessage,
 } from "@/lib/api";
+import type { ChatAttachment } from "@/lib/chat/attachments";
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 import { cn } from "@/lib/utils";
@@ -181,7 +182,8 @@ export function ForestCanvas({ projectId }: Props) {
           event: import("@/lib/llm/agent-events").AgentEvent
         ) => void;
         signal?: AbortSignal;
-      }
+      },
+      attachments?: ChatAttachment[]
     ): Promise<{ sessionId: string } | null> => {
       if (!target) return null;
       try {
@@ -190,7 +192,7 @@ export function ForestCanvas({ projectId }: Props) {
             projectId,
             sessionTarget,
           });
-          await sendMessage(session.id, { content }, {
+          await sendMessage(session.id, { content, attachments }, {
             onAgentEvent: stream.onAgentEvent,
             signal: stream.signal,
           });
@@ -202,7 +204,7 @@ export function ForestCanvas({ projectId }: Props) {
           const { session } = await forkSession(target.parentSessionId, {
             sessionTarget,
           });
-          await sendMessage(session.id, { content }, {
+          await sendMessage(session.id, { content, attachments }, {
             onAgentEvent: stream.onAgentEvent,
             signal: stream.signal,
           });
@@ -215,7 +217,7 @@ export function ForestCanvas({ projectId }: Props) {
             parentIds: target.parentSessionIds,
             sessionTarget,
           });
-          await sendMessage(session.id, { content }, {
+          await sendMessage(session.id, { content, attachments }, {
             onAgentEvent: stream.onAgentEvent,
             signal: stream.signal,
           });
