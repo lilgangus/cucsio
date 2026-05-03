@@ -306,7 +306,7 @@ export function ChatPanel({ roomCode, projectId }: Props) {
             onClick={() => void onNewSession()}
           >
             <GitBranchPlusIcon className="size-3.5" />
-            New session
+            New agent thread
           </Button>
         </div>
       </header>
@@ -332,9 +332,9 @@ export function ChatPanel({ roomCode, projectId }: Props) {
           </p>
         ) : emptyProject ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-muted-foreground">
-            <p className="max-w-sm text-sm">No sessions in this project yet.</p>
+            <p className="max-w-sm text-sm">No agent threads in this project yet.</p>
             <Button type="button" onClick={() => void onNewSession()}>
-              Create a session
+              Start first agent thread
             </Button>
           </div>
         ) : messagesLoading && messages.length === 0 ? (
@@ -419,10 +419,10 @@ export function ChatPanel({ roomCode, projectId }: Props) {
             disabled={inputDisabled || emptyProject}
             placeholder={
               emptyProject
-                ? "Create a session first…"
+                ? "Start an agent thread first…"
                 : lockedByOther
                   ? "Waiting for the current reply…"
-                  : "Message the assistant…"
+                  : "Message the agent…"
             }
             rows={2}
             className="resize-none"

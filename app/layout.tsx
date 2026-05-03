@@ -18,7 +18,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "cucsio",
   description:
-    "A multiplayer ChatGPT-style workspace. Group rooms, shared sessions, fork trees, and a project-wide search.",
+    "A multiplayer agent workspace with shared rooms, collaborative agent threads, graph-based forking, and project-wide AI search.",
 };
 
 export default function RootLayout({

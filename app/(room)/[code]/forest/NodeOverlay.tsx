@@ -458,16 +458,16 @@ export function NodeOverlay(props: OverlayProps) {
 
   const pendingHeadline =
     pendingMode === "new-tree"
-      ? "Start a new tree"
+      ? "Launch a root agent"
       : pendingMode === "new-fork"
-        ? "New branch — first message starts the new node"
+        ? "Spawn a child agent — first message starts the new node"
         : pendingMode === "new-combine"
-          ? "New chat with context — first message creates the node"
+          ? "Compose a context-backed agent — first message creates the node"
           : "Chat";
 
   const overlayAriaLabel = isPending
     ? pendingHeadline
-    : sessionTargetDraft.trim() || "Session chat";
+    : sessionTargetDraft.trim() || "Agent thread chat";
 
   const canBranch = !isPending && messages.length > 0;
 
@@ -505,7 +505,7 @@ export function NodeOverlay(props: OverlayProps) {
                   htmlFor="overlay-session-target"
                   className="sr-only"
                 >
-                  Session target
+                  Agent objective
                 </label>
                 <Input
                   id="overlay-session-target"
@@ -517,7 +517,7 @@ export function NodeOverlay(props: OverlayProps) {
                   onBlur={() => {
                     sessionTargetFocusedRef.current = false;
                   }}
-                  placeholder="What this session is for…"
+                  placeholder="What this agent thread is for…"
                   className="h-9 w-full border-dashed font-medium"
                 />
               </div>
@@ -530,10 +530,11 @@ export function NodeOverlay(props: OverlayProps) {
               size="sm"
               onClick={onBranchOff}
               disabled={!canBranch}
-              aria-label="Start a new branch from this chat"
+              aria-label="Branch a new agent from this session"
+              className="h-auto max-w-[min(100%,14rem)] shrink-0 items-start justify-start gap-2 whitespace-normal py-2 text-left text-xs leading-snug sm:max-w-[16rem] sm:text-sm [&_svg]:shrink-0"
             >
-              <GitBranchIcon />
-              New branch
+              <GitBranchIcon className="mt-0.5 size-4" />
+              Branch a new agent from this session
             </Button>
             <Button
               variant="ghost"
@@ -570,25 +571,25 @@ export function NodeOverlay(props: OverlayProps) {
                 htmlFor="pending-session-target"
                 className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
               >
-                Optional session target
+                Optional agent objective
               </label>
               <Input
                 id="pending-session-target"
                 value={pendingTarget}
                 onChange={(e) => setPendingTarget(e.target.value)}
-                placeholder="What this new session should attempt to fix..."
+                placeholder="What this new agent should investigate..."
               />
             </div>
           ) : null}
 
           {pendingMode === "new-tree" && messages.length === 0 ? (
-            <EmptyHint text="Send the first message to plant this tree." />
+            <EmptyHint text="Send the first message to activate this root agent." />
           ) : pendingMode === "new-fork" && messages.length === 0 ? (
-            <EmptyHint text="First message creates the branch (starts with key details from upstream, not the old transcript)." />
+            <EmptyHint text="First message spawns the child agent (it starts with upstream key details, not the full prior transcript)." />
           ) : pendingMode === "new-combine" &&
             messages.length === 0 &&
             parentIds.length === 0 ? (
-            <EmptyHint text="First send will create the new node." />
+            <EmptyHint text="First send will create the new agent node." />
           ) : null}
 
           {messages.map((m) => {
@@ -784,7 +785,7 @@ function SessionSourcesBanner({
           Sources
         </span>
         <span className="text-[11px] text-violet-600/90 dark:text-violet-400/90">
-          Open a previous branch below.
+          Open an upstream agent thread below.
         </span>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -813,7 +814,7 @@ function SessionSourcesBanner({
       {showUpstream && forkContext ? (
         <p className="mt-2 text-[11px] leading-relaxed text-violet-800/90 dark:text-violet-300/90">
           <span className="font-medium text-violet-950 dark:text-violet-100">
-            Upstream lineage:{" "}
+            Upstream agent lineage:{" "}
           </span>
           {forkContext.ancestorTargets.join(" → ")}
         </p>

@@ -447,8 +447,8 @@ function AgentIdleHint() {
         Agent is asleep.
       </p>
       <p className="max-w-xs text-xs">
-        Send a message, edit a session target, fork a branch, or run a search.
-        The agent will build a thinking tree around that prompt.
+        Send a message, update an agent objective, spawn a new agent, or run a
+        search. The system agent will build a reasoning tree around that signal.
       </p>
     </div>
   );
