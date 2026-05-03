@@ -68,7 +68,7 @@ function Landing() {
       return;
     }
     if (!target) {
-      toast.error("Add an initial session target");
+      toast.error("Add a first agent objective");
       return;
     }
     setCreating(true);
@@ -123,8 +123,8 @@ function Landing() {
           cucsio
         </h1>
         <p className="max-w-md text-muted-foreground">
-          A multiplayer ChatGPT-style workspace. Open a room, share the code,
-          and explore branching conversations together.
+          A collaborative agent workspace. Launch a room, share the code, and
+          orchestrate parallel agent threads across one living project graph.
         </p>
         {hasRedirect ? (
           <div className="rounded-md border border-border bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
@@ -146,8 +146,10 @@ function Landing() {
       <div className="grid w-full max-w-3xl gap-6 sm:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Create a project</CardTitle>
-            <CardDescription>Get a 6-character room code to share.</CardDescription>
+            <CardTitle>Launch a project room</CardTitle>
+            <CardDescription>
+              Start a shared workspace and generate a 6-character invite code.
+            </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <Input
@@ -161,7 +163,7 @@ function Landing() {
               disabled={!ready || creating}
             />
             <Input
-              placeholder="Initial session target (e.g. Find root cause of latency)"
+              placeholder="First agent objective (e.g. Find root cause of latency)"
               value={initialSessionTarget}
               onChange={(e) => setInitialSessionTarget(e.target.value)}
               onKeyDown={(e) => {
@@ -180,15 +182,17 @@ function Landing() {
                 initialSessionTarget.trim().length === 0
               }
             >
-              {creating ? "Creating..." : "Create project"}
+              {creating ? "Launching..." : "Launch project room"}
             </Button>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Join by code</CardTitle>
-            <CardDescription>Hop into an existing project.</CardDescription>
+            <CardTitle>Join an active room</CardTitle>
+            <CardDescription>
+              Enter an invite code to collaborate with the live agent team.
+            </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <Input
@@ -214,7 +218,7 @@ function Landing() {
               onClick={() => void handleJoin()}
               disabled={!ready || joining || !isValidRoomCode(joinCode)}
             >
-              {joining ? "Checking..." : "Join"}
+              {joining ? "Checking..." : "Join room"}
             </Button>
             {joinError ? (
               <p
@@ -229,8 +233,8 @@ function Landing() {
       </div>
 
       <p className="mt-10 max-w-md text-center text-xs text-muted-foreground">
-        Hackathon MVP. No accounts, no passwords. Anyone with a room code can
-        join. See <code className="font-mono">AGENTS.md</code> for scope.
+        Lightweight identity, realtime collaboration, and invite-code access by
+        design. Anyone with a room code can join your shared agent workspace.
       </p>
     </main>
   );

@@ -374,7 +374,7 @@ export function ForestCanvas({ projectId }: Props) {
               aria-label="Start a new chat seeded from the selected node or nodes"
             >
               <GitMergeIcon className="size-4" strokeWidth={2.5} />
-              <span>New chat with context</span>
+              <span>Compose agent from context</span>
             </button>
             <button
               type="button"
@@ -388,10 +388,10 @@ export function ForestCanvas({ projectId }: Props) {
           </>
         ) : (
           <div className="text-xs text-muted-foreground">
-            Click <span className="font-medium text-foreground">+</span> to plant
-            a new tree, or click any node to open its chat.
+            Click <span className="font-medium text-foreground">+</span> to launch
+            a root agent, or click any node to open its thread.
             {" "}Use <span className="font-medium text-foreground">✓</span> on cards to
-            select nodes, then start a new chat with context.
+            select nodes, then compose a context-backed agent.
           </div>
         )}
 
@@ -550,10 +550,10 @@ function NewTreeButton({ onClick }: { onClick: () => void }) {
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400",
         "dark:border-blue-300/50 dark:bg-blue-400/10 dark:text-blue-200"
       )}
-      aria-label="Start a new tree"
+      aria-label="Launch a new root agent"
     >
       <PlusIcon className="size-5" strokeWidth={2.5} />
-      <span>New chat</span>
+      <span>New agent</span>
     </button>
   );
 }
@@ -561,8 +561,8 @@ function NewTreeButton({ onClick }: { onClick: () => void }) {
 function EmptyForestHint() {
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-muted-foreground">
-      <p className="text-sm">No trees yet.</p>
-      <p className="text-xs">Hit &ldquo;New chat&rdquo; at the top to plant one.</p>
+      <p className="text-sm">No agent graph yet.</p>
+      <p className="text-xs">Hit &ldquo;New agent&rdquo; at the top to launch one.</p>
     </div>
   );
 }

@@ -57,9 +57,9 @@ export function NodeCard({
   className,
 }: Props) {
   const displaySummary =
-    summary.trim().length > 0 ? summary : "No summary yet for this session";
+    summary.trim().length > 0 ? summary : "No summary yet for this agent thread";
 
-  const chipLabel = isMerged ? "blended" : isRoot ? "root session" : "session";
+  const chipLabel = isMerged ? "blended agents" : isRoot ? "root agent" : "agent";
 
   const onCardKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter" || e.key === " ") {
