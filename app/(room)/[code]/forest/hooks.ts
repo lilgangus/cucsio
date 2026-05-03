@@ -4,6 +4,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -73,6 +74,8 @@ export function useProjectSessions(projectId: string | null): {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Supabase requires unique channel names per subscriber; multiple trees call this hook with the same `projectId`. */
+  const realtimeScope = useId().replace(/:/g, "");
 
   useEffect(() => {
     if (!projectId) return;
@@ -96,7 +99,7 @@ export function useProjectSessions(projectId: string | null): {
     })();
 
     const channel = supabase
-      .channel(`project-sessions:${projectId}`)
+      .channel(`project-sessions:${projectId}:${realtimeScope}`)
       .on(
         "postgres_changes",
         {
@@ -148,7 +151,7 @@ export function useProjectSessions(projectId: string | null): {
       void channel.unsubscribe();
       void supabase.removeChannel(channel);
     };
-  }, [projectId]);
+  }, [projectId, realtimeScope]);
 
   // Stable order: oldest first. Memoize so consumers can reference-compare.
   const ordered = useMemo(

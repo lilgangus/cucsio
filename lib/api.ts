@@ -5,12 +5,7 @@ import {
   loadIdentity,
   type Identity,
 } from "@/lib/identity";
-import type {
-  MessageRow,
-  ProjectRow,
-  SessionRow,
-  UserRow,
-} from "@/types/db";
+import type { HighlightRow, ProjectRow, SessionRow, UserRow } from "@/types/db";
 
 /** Thrown by `postJSON` when the server returns a non-2xx. */
 export class ApiError extends Error {
@@ -155,24 +150,111 @@ export function forkSession(
 
 export type SendMessageBody = { content: string };
 
-export type SendMessageResponse = {
-  user: MessageRow;
-  assistant: MessageRow;
+export type SendMessageOptions = {
+  /** Fires as assistant tokens arrive (`text/plain` stream body). */
+  onAssistantDelta?: (accumulatedText: string) => void;
 };
 
 /**
- * Send one message in a session. The server holds the session-wide
- * "currently sending" lock for the whole roundtrip; this throws an
+ * Send one message in a session. The assistant reply streams as UTF-8 text;
+ * optional `onAssistantDelta` receives the growing string. The final message
+ * is still saved by the server and appears via Realtime. This throws an
  * `ApiError` with `status === 409` if someone else is mid-turn.
  */
-export function sendMessage(
+export async function sendMessage(
   sessionId: string,
-  body: SendMessageBody
-): Promise<SendMessageResponse> {
-  return postJSON<SendMessageResponse>(
+  body: SendMessageBody,
+  options?: SendMessageOptions
+): Promise<void> {
+  const id = loadIdentity();
+  const res = await fetch(
     `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-    body
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(id ? { [CLIENT_ID_HEADER]: id.clientId } : {}),
+      },
+      body: JSON.stringify(body),
+    }
   );
+
+  if (!res.ok) {
+    let payload: unknown = null;
+    try {
+      payload = await res.json();
+    } catch {
+      /* empty or non-json */
+    }
+    const message =
+      payload && typeof payload === "object" && "error" in payload
+        ? String((payload as { error: unknown }).error)
+        : `Request failed with ${res.status}`;
+    throw new ApiError(res.status, message, payload);
+  }
+
+  if (!res.body) {
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let accumulated = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      accumulated += decoder.decode(value, { stream: true });
+      options?.onAssistantDelta?.(accumulated);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// --- Highlights --------------------------------------------------------------
+
+export type CreateHighlightBody = {
+  sessionId: string;
+  messageId: string;
+  /** Selected substring — must appear in the persisted message `content`. */
+  content: string;
+};
+
+export type CreateHighlightResponse = { highlight: HighlightRow };
+
+export function createHighlight(
+  body: CreateHighlightBody
+): Promise<CreateHighlightResponse> {
+  return postJSON<CreateHighlightResponse>("/api/highlights", body);
+}
+
+export async function deleteHighlight(highlightId: string): Promise<void> {
+  const id = loadIdentity();
+  const res = await fetch(
+    `/api/highlights/${encodeURIComponent(highlightId)}`,
+    {
+      method: "DELETE",
+      headers: {
+        ...(id ? { [CLIENT_ID_HEADER]: id.clientId } : {}),
+      },
+    }
+  );
+
+  if (res.status === 204) return;
+
+  let payload: unknown = null;
+  try {
+    payload = await res.json();
+  } catch {
+    /* empty */
+  }
+
+  const message =
+    payload && typeof payload === "object" && "error" in payload
+      ? String((payload as { error: unknown }).error)
+      : `Request failed with ${res.status}`;
+  throw new ApiError(res.status, message, payload);
 }
 
 export type CombineContextsBody = {

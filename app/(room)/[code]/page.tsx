@@ -42,7 +42,7 @@ export default async function RoomPage({ params, searchParams }: Props) {
         {treeEnabled ? (
           <ForestCanvas projectId={projectId} />
         ) : (
-          <ChatPanel roomCode={normalized} />
+          <ChatPanel roomCode={normalized} projectId={projectId} />
         )}
       </div>
 
