@@ -16,6 +16,7 @@ import { peersFromRealtimePresence } from "@/lib/realtime/presence-peers";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import type {
   MessageRow,
+  SessionParentRow,
   SessionParticipantRow,
   SessionRow,
   UserRow,
@@ -648,6 +649,119 @@ export function useSessionOccupancyPolling({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sessionIdsKey gates identity of session list
   }, [sessionIdsKey, pollMs, activeWindowMs]);
+
+  return byId;
+}
+
+/**
+ * Live map of session_id → parent_id[] for an entire project.
+ *
+ * Fetches all rows from `session_parents` where the child session
+ * belongs to the project, then listens for INSERTs so newly created
+ * forks / combined-context nodes appear in real time.
+ *
+ * Returns a stable `Record<string, string[]>` where each key is a
+ * child session id and the value is the ordered list of its parents
+ * (order is insertion order from the DB, which matches the order the
+ * caller passed to the combine API).
+ */
+export function useProjectParents(
+  projectId: string | null
+): Record<string, string[]> {
+  const [byId, setById] = useState<Record<string, string[]>>({});
+
+  useEffect(() => {
+    if (!projectId) return;
+    const supabase = getSupabaseBrowser();
+    let cancelled = false;
+    let channel: RealtimeChannel | null = null;
+
+    (async () => {
+      const { data, error: err } = await supabase
+        .from("session_parents")
+        .select(
+          "session_id, parent_id, sessions!session_parents_session_id_fkey(project_id)"
+        )
+        .eq("sessions.project_id", projectId);
+
+      if (cancelled) return;
+      if (err) {
+        const code = (err as { code?: string }).code;
+        const missing =
+          code === "PGRST205" ||
+          /session_parents/i.test(err.message ?? "");
+        if (missing) {
+          console.warn(
+            "[useProjectParents] `session_parents` is not available yet. " +
+              "Run `db/migrations/0004_session_parents.sql` in the Supabase SQL editor " +
+              "(it ends with `notify pgrst, 'reload schema';`). Until then, the forest " +
+              "uses only `sessions.parent_session_id` for parent links."
+          );
+        } else {
+          console.error("[useProjectParents] initial load", err);
+        }
+        return;
+      }
+
+      type ParentRow = {
+        session_id: string;
+        parent_id: string;
+        sessions: { project_id: string }[] | null;
+      };
+      const next: Record<string, string[]> = {};
+      for (const row of (data ?? []) as unknown as ParentRow[]) {
+        const proj = Array.isArray(row.sessions)
+          ? row.sessions[0]?.project_id
+          : (row.sessions as { project_id: string } | null)?.project_id;
+        if (proj !== projectId) continue;
+        if (!next[row.session_id]) next[row.session_id] = [];
+        next[row.session_id].push(row.parent_id);
+      }
+      setById(next);
+
+      if (cancelled) return;
+      channel = supabase
+        .channel(`project-parents:${projectId}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "session_parents" },
+          (payload) => {
+            const row = payload.new as SessionParentRow;
+            setById((prev) => {
+              const existing = prev[row.session_id] ?? [];
+              if (existing.includes(row.parent_id)) return prev;
+              return { ...prev, [row.session_id]: [...existing, row.parent_id] };
+            });
+          }
+        )
+        .on(
+          "postgres_changes",
+          { event: "DELETE", schema: "public", table: "session_parents" },
+          (payload) => {
+            const row = payload.old as Partial<SessionParentRow>;
+            if (!row.session_id || !row.parent_id) return;
+            setById((prev) => {
+              const existing = prev[row.session_id!] ?? [];
+              const next = existing.filter((id) => id !== row.parent_id);
+              if (next.length === existing.length) return prev;
+              const out = { ...prev };
+              if (next.length === 0) delete out[row.session_id!];
+              else out[row.session_id!] = next;
+              return out;
+            });
+          }
+        )
+        .subscribe();
+    })();
+
+    return () => {
+      cancelled = true;
+      if (channel) {
+        void channel.unsubscribe();
+        void supabase.removeChannel(channel);
+      }
+    };
+  }, [projectId]);
 
   return byId;
 }

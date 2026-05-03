@@ -1,6 +1,6 @@
 "use client";
 
-import { PlusIcon } from "lucide-react";
+import { GitMergeIcon, PlusIcon, XIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -12,6 +12,7 @@ import { toast } from "sonner";
 
 import {
   ApiError,
+  combineContexts,
   createSession,
   forkSession,
   sendMessage,
@@ -27,11 +28,12 @@ import {
 } from "./compute-layout";
 import {
   useForestPresence,
+  useProjectParents,
   useProjectSessions,
 } from "./hooks";
 import { NodeCard } from "./NodeCard";
 import { NodeOverlay } from "./NodeOverlay";
-import type { NodePosition, OverlayTarget } from "./types";
+import type { LaidOutEdge, NodePosition, OverlayTarget } from "./types";
 
 /**
  * The main forest surface. Owns:
@@ -39,19 +41,7 @@ import type { NodePosition, OverlayTarget } from "./types";
  *   - Per-session `session:{id}` realtime presence (icons on each branch + overlay)
  *   - the layout pass (memoized on the live session list)
  *   - which session, if any, is "popped up" in the overlay
- *
- * Data flow:
- *
- *   Postgres  ──CDC──▶  useProjectSessions  ──▶  buildForestFromSessions
- *                                                       │
- *                                                       ▼
- *                                                 layoutForest
- *                                                       │
- *                                                       ▼
- *                                                NodeCard (×N) + edges
- *
- * Sending / branching go through the API routes which take the
- * session-wide lock so simultaneous senders can't trample each other.
+ *   - multi-node selection for "New chat with context" (DAG combine)
  */
 
 const FOREST_PADDING = 56;
@@ -67,6 +57,7 @@ type ForkContext = {
 
 export function ForestCanvas({ projectId }: Props) {
   const { sessions, loading, error } = useProjectSessions(projectId);
+  const parentsBySession = useProjectParents(projectId);
   const [target, setTarget] = useState<OverlayTarget | null>(null);
   const { setFocusedSessionId } = useSessionFocus();
 
@@ -78,7 +69,13 @@ export function ForestCanvas({ projectId }: Props) {
         ? target.parentSessionId
         : null;
 
-  const forest = useMemo(() => buildForestFromSessions(sessions), [sessions]);
+  // Multi-select state. Set of session ids currently selected.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const forest = useMemo(
+    () => buildForestFromSessions(sessions, parentsBySession),
+    [sessions, parentsBySession]
+  );
   const layout = useMemo(() => layoutForest(forest), [forest]);
 
   const sessionIds = useMemo(() => sessions.map((s) => s.id), [sessions]);
@@ -95,16 +92,14 @@ export function ForestCanvas({ projectId }: Props) {
     return () => setFocusedSessionId(null);
   }, [setFocusedSessionId]);
 
-  // Filter out self for the card-level "others present" indicator —
-  // seeing your own dot on every card you've ever opened is noisy.
+  // Filter out self for the card-level "others present" indicator.
   const [identity, setIdentity] = useState<Identity | null>(null);
   useEffect(() => {
-    // localStorage is only reachable post-hydration. Canonical
-    // sync-with-external-system read; matches the pattern used in
-    // top-bar.tsx + room-guard.tsx.
+    // localStorage is only reachable post-hydration.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIdentity(loadIdentity());
   }, []);
+
   const othersBySession = useMemo(() => {
     const me = identity?.clientId;
     const out: typeof presenceBySession = {};
@@ -114,26 +109,35 @@ export function ForestCanvas({ projectId }: Props) {
     return out;
   }, [presenceBySession, identity]);
 
+  // Selection helpers
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
   // Actions ----------------------------------------------------------
 
   const startNewTree = () => setTarget({ kind: "new-tree" });
+  const closeOverlay = () => setTarget(null);
 
-  const closeOverlay = () => {
-    setTarget(null);
-  };
+  const branchOff = useCallback(async (parentSessionId: string) => {
+    setTarget({ kind: "new-fork", parentSessionId });
+  }, []);
 
-  const branchOff = useCallback(
-    async (parentSessionId: string) => {
-      setTarget({ kind: "new-fork", parentSessionId });
-    },
-    []
-  );
+  /** Toolbar "New chat with context" — selected node(s) seed the next chat. */
+  const newChatWithContext = useCallback(() => {
+    const ids = [...selectedIds];
+    if (ids.length < 1) return;
+    setTarget({ kind: "new-combine", parentSessionIds: ids });
+    clearSelection();
+  }, [selectedIds, clearSelection]);
 
-  /**
-   * Used by the overlay when the user types the first message of a
-   * pending tree / fork: lazily creates the session, then sends.
-   * Returns the new session id so the overlay can switch over.
-   */
   const handleFirstSend = useCallback(
     async (
       content: string,
@@ -142,25 +146,25 @@ export function ForestCanvas({ projectId }: Props) {
       if (!target) return null;
       try {
         if (target.kind === "new-tree") {
-          const { session } = await createSession({
-            projectId,
-            sessionTarget,
-          });
+          const { session } = await createSession({ projectId, sessionTarget });
           await sendMessage(session.id, { content });
           setTarget({ kind: "session", sessionId: session.id });
           return { sessionId: session.id };
         }
         if (target.kind === "new-fork") {
-          const { session } = await forkSession(target.parentSessionId, {
-            sessionTarget,
-          });
+          const { session } = await forkSession(target.parentSessionId, { sessionTarget });
+          await sendMessage(session.id, { content });
+          setTarget({ kind: "session", sessionId: session.id });
+          return { sessionId: session.id };
+        }
+        if (target.kind === "new-combine") {
+          const { session } = await combineContexts({ parentIds: target.parentSessionIds });
           await sendMessage(session.id, { content });
           setTarget({ kind: "session", sessionId: session.id });
           return { sessionId: session.id };
         }
       } catch (err) {
-        const msg =
-          err instanceof ApiError ? err.message : "Could not start chat";
+        const msg = err instanceof ApiError ? err.message : "Could not start chat";
         toast.error(msg);
         return null;
       }
@@ -169,8 +173,7 @@ export function ForestCanvas({ projectId }: Props) {
     [target, projectId]
   );
 
-  // Resolve the overlay's session row from the live sessions list, so
-  // the lock chip etc. update in real time.
+  // Resolve the overlay's session row from the live sessions list.
   const targetSession = useMemo(() => {
     if (target?.kind !== "session") return null;
     return sessions.find((s) => s.id === target.sessionId) ?? null;
@@ -218,6 +221,15 @@ export function ForestCanvas({ projectId }: Props) {
     return null;
   }, [target, targetSession, buildForkContext]);
 
+  // Map of session_id → label for the "Branched from" breadcrumb.
+  const sessionLabels = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const s of sessions) {
+      m[s.id] = s.label?.trim() || (s.parent_session_id ? "Fork" : "Main");
+    }
+    return m;
+  }, [sessions]);
+
   // Render -----------------------------------------------------------
 
   const inner = {
@@ -225,18 +237,54 @@ export function ForestCanvas({ projectId }: Props) {
     height: Math.max(layout.height + FOREST_PADDING * 2, NODE_H * 2),
   };
 
+  const hasSelection = selectedIds.size > 0;
+
   return (
     <section className="relative z-10 flex h-full min-h-0 flex-1 flex-col bg-background/80 backdrop-blur-sm">
-      <div className="flex shrink-0 items-center gap-3 border-b border-border/60 bg-card/50 px-4 py-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 bg-card/50 px-4 py-3">
         <NewTreeButton onClick={startNewTree} />
-        <div className="text-xs text-muted-foreground">
-          Click <span className="font-medium text-foreground">+</span> to plant
-          a new tree, or click any node to open its chat.
-        </div>
-        {error ? (
-          <div className="ml-auto text-xs text-destructive">
-            Error: {error}
+
+        {hasSelection ? (
+          <>
+            <span className="text-xs text-muted-foreground">
+              {selectedIds.size} selected
+            </span>
+            <button
+              type="button"
+              onClick={newChatWithContext}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-2xl border-2 border-violet-400/70 bg-violet-500/15 px-3 py-1.5",
+                "text-sm font-medium text-violet-700 shadow-sm transition-all",
+                "hover:scale-[1.02] hover:bg-violet-500/25 hover:shadow-md",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400",
+                "dark:border-violet-300/50 dark:bg-violet-400/10 dark:text-violet-200"
+              )}
+              aria-label="Start a new chat seeded from the selected node or nodes"
+            >
+              <GitMergeIcon className="size-4" strokeWidth={2.5} />
+              <span>New chat with context</span>
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="ml-auto inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+              aria-label="Clear selection"
+            >
+              <XIcon className="size-3" />
+              Clear
+            </button>
+          </>
+        ) : (
+          <div className="text-xs text-muted-foreground">
+            Click <span className="font-medium text-foreground">+</span> to plant
+            a new tree, or click any node to open its chat.
+            {" "}Use <span className="font-medium text-foreground">✓</span> on cards to
+            select nodes, then start a new chat with context.
           </div>
+        )}
+
+        {error ? (
+          <div className="ml-auto text-xs text-destructive">Error: {error}</div>
         ) : null}
       </div>
 
@@ -246,11 +294,13 @@ export function ForestCanvas({ projectId }: Props) {
           style={{ width: inner.width, height: inner.height }}
         >
           <ForestEdges layout={layout} />
+
           {Object.values(forest.nodes).map((node) => {
             const pos = layout.positions[node.id];
             if (!pos) return null;
             const focused =
               target?.kind === "session" && target.sessionId === node.id;
+            const isMerged = node.parentIds.length > 1;
             return (
               <NodeCard
                 key={node.id}
@@ -258,15 +308,17 @@ export function ForestCanvas({ projectId }: Props) {
                 label={node.label}
                 summary={node.summary}
                 isRoot={node.parentId == null}
+                isMerged={isMerged}
                 isLocked={node.pendingUserId != null}
                 presence={othersBySession[node.id] ?? []}
                 focused={focused}
-                onClick={() =>
-                  setTarget({ kind: "session", sessionId: node.id })
-                }
+                isSelected={selectedIds.has(node.id)}
+                onSelect={() => toggleSelect(node.id)}
+                onClick={() => setTarget({ kind: "session", sessionId: node.id })}
               />
             );
           })}
+
           {!loading && forest.trees.length === 0 ? <EmptyForestHint /> : null}
         </div>
       </div>
@@ -278,7 +330,9 @@ export function ForestCanvas({ projectId }: Props) {
               ? target.sessionId
               : target.kind === "new-fork"
                 ? `fork:${target.parentSessionId}`
-                : "new-tree"
+                : target.kind === "new-combine"
+                  ? `combine:${[...target.parentSessionIds].sort().join(",")}`
+                  : "new-tree"
           }
           session={targetSession}
           presence={
@@ -294,13 +348,34 @@ export function ForestCanvas({ projectId }: Props) {
               ? "new-tree"
               : target.kind === "new-fork"
                 ? "new-fork"
-                : undefined
+                : target.kind === "new-combine"
+                  ? "new-combine"
+                  : undefined
           }
-          onSendNew={handleFirstSend}
+          parentIds={
+            target.kind === "new-fork"
+              ? [target.parentSessionId]
+              : target.kind === "new-combine"
+                ? target.parentSessionIds
+                : target.kind === "session" && targetSession
+                  ? (() => {
+                      const fromJoin = parentsBySession[targetSession.id] ?? [];
+                      if (fromJoin.length > 0) return fromJoin;
+                      return targetSession.parent_session_id
+                        ? [targetSession.parent_session_id]
+                        : [];
+                    })()
+                  : []
+          }
+          parentLabels={sessionLabels}
           forkContext={forkContext}
+          onSendNew={handleFirstSend}
           onBranchOff={() => {
             if (target.kind === "session") void branchOff(target.sessionId);
           }}
+          onOpenSession={(sessionId) =>
+            setTarget({ kind: "session", sessionId })
+          }
           onClose={closeOverlay}
         />
       ) : null}
@@ -318,7 +393,7 @@ function ForestEdges({ layout }: { layout: ReturnType<typeof layoutForest> }) {
       className="pointer-events-none absolute inset-0 h-full w-full text-border"
       aria-hidden
     >
-      {layout.edges.map((edge) => {
+      {layout.edges.map((edge: LaidOutEdge) => {
         const from = layout.positions[edge.from];
         const to = layout.positions[edge.to];
         if (!from || !to) return null;
@@ -329,10 +404,11 @@ function ForestEdges({ layout }: { layout: ReturnType<typeof layoutForest> }) {
           <path
             key={`${edge.from}-${edge.to}`}
             d={path}
-            stroke="currentColor"
+            stroke={edge.secondary ? "rgb(139 92 246 / 0.55)" : "currentColor"}
             strokeWidth={1.5}
+            strokeDasharray={edge.secondary ? "5 3" : undefined}
             fill="none"
-            opacity={0.55}
+            opacity={edge.secondary ? 0.7 : 0.55}
           />
         );
       })}
@@ -372,7 +448,7 @@ function EmptyForestHint() {
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-muted-foreground">
       <p className="text-sm">No trees yet.</p>
-      <p className="text-xs">Hit “New chat” at the top to plant one.</p>
+      <p className="text-xs">Hit &ldquo;New chat&rdquo; at the top to plant one.</p>
     </div>
   );
 }

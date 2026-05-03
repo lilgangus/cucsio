@@ -174,3 +174,25 @@ export function sendMessage(
     body
   );
 }
+
+export type CombineContextsBody = {
+  /** Parent session ids (no message copy; links only). */
+  parentIds: string[];
+  label?: string;
+};
+
+export type CombineContextsResponse = {
+  session: SessionRow;
+  parentIds: string[];
+  copiedMessages: number;
+};
+
+/**
+ * Create a new session from selected parent(s) (toolbar: "New chat with context").
+ * Each id in `parentIds` gets a row in `session_parents`.
+ */
+export function combineContexts(
+  body: CombineContextsBody
+): Promise<CombineContextsResponse> {
+  return postJSON<CombineContextsResponse>("/api/sessions/combine", body);
+}

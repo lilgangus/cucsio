@@ -11,15 +11,27 @@ import type {
 } from "./types";
 
 /**
- * Project a flat list of `sessions` rows into the visual `Forest`
- * shape consumed by layout + render. Roots are sessions with
- * `parent_session_id IS NULL`; their `id` becomes the `treeId` for the
- * whole subtree below them.
+ * Project a flat list of `sessions` rows (plus the full parent-edges
+ * map from `useProjectParents`) into the visual `Forest` shape.
  *
- * Orphaned children (parent missing or in another tree) are dropped
- * with a console warning rather than blowing up the UI.
+ * DAG layout strategy:
+ *   - A node's "primary" parent (`sessions.parent_session_id`) is the
+ *     one used for the column-positioning layout pass.  We still draw
+ *     edges for ALL parents from `parentIds`.
+ *   - Multi-parent (combined-context) nodes are placed in the tree of
+ *     their primary parent; secondary parent edges become dashed
+ *     cross-tree connectors in the SVG layer.
+ *   - Root nodes have no parents; they each start their own tree.
  */
-export function buildForestFromSessions(sessions: SessionRow[]): Forest {
+export function buildForestFromSessions(
+  sessions: SessionRow[],
+  /**
+   * Map of session_id → parent_id[] from `useProjectParents`.
+   * When omitted (e.g. before the hook resolves) we fall back to
+   * reading `parent_session_id` from the session row only.
+   */
+  parentsBySession: Record<string, string[]> = {}
+): Forest {
   const byId = new Map(sessions.map((s) => [s.id, s] as const));
 
   const treeIdFor = (sessionId: string, seen = new Set<string>()): string | null => {
@@ -41,8 +53,6 @@ export function buildForestFromSessions(sessions: SessionRow[]): Forest {
   for (const row of sessions) {
     const treeId = treeIdFor(row.id);
     if (!treeId) {
-      // Either this session is parented to one we can't see, or the
-      // chain loops. Either way, skip rather than crash.
       console.warn("[forest] dropping orphan session", row.id);
       continue;
     }
@@ -53,10 +63,18 @@ export function buildForestFromSessions(sessions: SessionRow[]): Forest {
         createdAt: Date.parse(row.created_at) || 0,
       });
     }
+
+    // parentIds: prefer the live table over what the sessions row says,
+    // because it includes all edges (single + multi-parent).
+    const parentIds: string[] =
+      parentsBySession[row.id] ??
+      (row.parent_session_id ? [row.parent_session_id] : []);
+
     nodes[row.id] = {
       id: row.id,
       treeId,
       parentId: row.parent_session_id,
+      parentIds,
       label:
         row.session_target?.trim() ||
         row.label?.trim() ||
@@ -108,9 +126,16 @@ export function layoutForest(forest: Forest): LaidOutForest {
 
   const positions: Record<string, NodePosition> = {};
   const edges: LaidOutEdge[] = [];
+  const edgeKey = (e: LaidOutEdge) => `${e.from}-${e.to}`;
+  const seenKeys = new Set<string>();
   for (const t of trees) {
     Object.assign(positions, t.positions);
-    edges.push(...t.edges);
+    for (const e of t.edges) {
+      const k = edgeKey(e);
+      if (seenKeys.has(k)) continue;
+      seenKeys.add(k);
+      edges.push(e);
+    }
   }
 
   // Drop the trailing TREE_GAP so the bounding box is tight.
@@ -179,10 +204,16 @@ function layoutOneTree(
     positions[id] = { x: positions[id].x + offsetX, y: positions[id].y };
   }
 
+  // Emit edges for ALL parents, not just the primary one. Secondary-
+  // parent edges (crossing tree boundaries for combined-context nodes)
+  // are flagged so the renderer can style them differently (dashed).
   const edges: LaidOutEdge[] = [];
   for (const node of Object.values(forest.nodes)) {
     if (node.treeId !== treeId) continue;
-    if (node.parentId) edges.push({ from: node.parentId, to: node.id });
+    const uniqueParents = [...new Set(node.parentIds)];
+    for (const pid of uniqueParents) {
+      edges.push({ from: pid, to: node.id, secondary: pid !== node.parentId });
+    }
   }
 
   const height = (maxDepth + 1) * NODE_H + maxDepth * V_GAP;

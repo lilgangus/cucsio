@@ -18,9 +18,25 @@
 
 export type ForestNode = {
   id: string;
+  /**
+   * The "primary" tree this node belongs to, used for layout column
+   * assignment. For multi-parent nodes we assign them to the first
+   * parent's tree; for roots it's their own id.
+   */
   treeId: string;
+  /**
+   * Primary parent id — used for column positioning. Null for roots.
+   * For single-parent forks this is the only parent; for merged nodes
+   * it is `parentIds[0]`.
+   */
   parentId: string | null;
-  /** Short label shown on the card. Falls back to "Untitled" if empty. */
+  /**
+   * All parent ids, including the primary one. Empty for root nodes.
+   * Populated from the `session_parents` join table (migration 0004).
+   * Multi-parent nodes render edges to each parent.
+   */
+  parentIds: string[];
+  /** Short label shown on the card. */
   label: string;
   /** Longer line shown beneath the label; from `sessions.summary`. */
   summary: string;
@@ -46,24 +62,26 @@ export type Forest = {
 
 /**
  * What the overlay is currently focused on:
- *   - "session": an existing session (the common case).
- *   - "new-tree": "+ new chat" was clicked but no session has been
- *     created yet. Sending the first message creates it on the server.
- *   - "new-fork": "Branch off" was clicked from a session. The fork
- *     hasn't been created yet — sending the first message kicks off
- *     POST /sessions/:parent/fork and then sends into the result.
- *
- * Keeping the "pending" intents client-side means we don't litter the
- * DB with empty sessions when someone clicks + and then closes.
+ *   - "session":    an existing session (the common case).
+ *   - "new-tree":   "+ new chat" was clicked; session created on first send.
+ *   - "new-fork":   "New branch" clicked; fork created on first send.
+ *   - "new-combine": "New chat with context" from toolbar (1+ selected);
+ *                    multi-parent session created on first send.
  */
 export type OverlayTarget =
   | { kind: "session"; sessionId: string }
   | { kind: "new-tree" }
-  | { kind: "new-fork"; parentSessionId: string };
+  | { kind: "new-fork"; parentSessionId: string }
+  | { kind: "new-combine"; parentSessionIds: string[] };
 
 export type NodePosition = { x: number; y: number };
 
-export type LaidOutEdge = { from: string; to: string };
+export type LaidOutEdge = {
+  from: string;
+  to: string;
+  /** True for non-primary parent edges (multi-parent / combined-context nodes). Drawn dashed. */
+  secondary?: boolean;
+};
 
 export type LaidOutTree = {
   treeId: string;
