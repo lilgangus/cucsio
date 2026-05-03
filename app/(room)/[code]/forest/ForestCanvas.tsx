@@ -19,6 +19,7 @@ import {
 } from "@/lib/api";
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { useSessionFocus } from "@/lib/realtime/session-focus-context";
+import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import { cn } from "@/lib/utils";
 import {
   buildForestFromSessions,
@@ -71,6 +72,15 @@ export function ForestCanvas({ projectId }: Props) {
 
   // Multi-select state. Set of session ids currently selected.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  /**
+   * "Add existing branch" mode. When non-null, the overlay is closed
+   * and the next node click inserts a `session_parents` row linking
+   * `childSessionId` to the picked node. Cleared on Cancel or success.
+   */
+  const [addParentMode, setAddParentMode] = useState<{
+    childSessionId: string;
+  } | null>(null);
 
   const forest = useMemo(
     () => buildForestFromSessions(sessions, parentsBySession),
@@ -129,6 +139,92 @@ export function ForestCanvas({ projectId }: Props) {
   const branchOff = useCallback(async (parentSessionId: string) => {
     setTarget({ kind: "new-fork", parentSessionId });
   }, []);
+
+  /**
+   * Walk ancestors of `candidateAncestorId` via `parentsBySession` and
+   * return true if `descendantId` shows up — i.e. adding the candidate
+   * as a parent of the descendant would close a cycle in the DAG.
+   */
+  const wouldCreateCycle = useCallback(
+    (descendantId: string, candidateAncestorId: string): boolean => {
+      const stack: string[] = [candidateAncestorId];
+      const seen = new Set<string>();
+      while (stack.length > 0) {
+        const cur = stack.pop()!;
+        if (cur === descendantId) return true;
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        const ps = parentsBySession[cur] ?? [];
+        for (const p of ps) stack.push(p);
+      }
+      return false;
+    },
+    [parentsBySession]
+  );
+
+  const enterAddParentMode = useCallback(() => {
+    if (target?.kind !== "session") return;
+    setAddParentMode({ childSessionId: target.sessionId });
+    setTarget(null);
+  }, [target]);
+
+  const cancelAddParentMode = useCallback(() => {
+    if (!addParentMode) return;
+    const { childSessionId } = addParentMode;
+    setAddParentMode(null);
+    setTarget({ kind: "session", sessionId: childSessionId });
+  }, [addParentMode]);
+
+  const addExistingParent = useCallback(
+    async (parentSessionId: string) => {
+      if (!addParentMode) return;
+      const { childSessionId } = addParentMode;
+
+      if (parentSessionId === childSessionId) {
+        toast.error("A session can't be its own parent");
+        return;
+      }
+
+      const childRow = sessions.find((s) => s.id === childSessionId);
+      const parentRow = sessions.find((s) => s.id === parentSessionId);
+      if (
+        childRow &&
+        parentRow &&
+        childRow.project_id !== parentRow.project_id
+      ) {
+        toast.error("Pick a session in this project");
+        return;
+      }
+
+      const existing = parentsBySession[childSessionId] ?? [];
+      if (existing.includes(parentSessionId)) {
+        toast.error("That session is already a parent");
+        return;
+      }
+      if (wouldCreateCycle(childSessionId, parentSessionId)) {
+        toast.error("That would create a cycle in the forest");
+        return;
+      }
+
+      try {
+        const supabase = getSupabaseBrowser();
+        const { error } = await supabase
+          .from("session_parents")
+          .insert({ session_id: childSessionId, parent_id: parentSessionId });
+        if (error) throw error;
+        toast.success("Branch linked");
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Could not link branch";
+        toast.error(msg);
+        return;
+      }
+
+      setAddParentMode(null);
+      setTarget({ kind: "session", sessionId: childSessionId });
+    },
+    [addParentMode, sessions, parentsBySession, wouldCreateCycle]
+  );
 
   /** Toolbar "New chat with context" — selected node(s) seed the next chat. */
   const newChatWithContext = useCallback(() => {
@@ -239,12 +335,59 @@ export function ForestCanvas({ projectId }: Props) {
 
   const hasSelection = selectedIds.size > 0;
 
+  // Label for the "Adding parent to ..." banner.
+  const addParentChildLabel = useMemo(() => {
+    if (!addParentMode) return "";
+    const row = sessions.find((s) => s.id === addParentMode.childSessionId);
+    if (!row) return "this chat";
+    return (
+      row.session_target?.trim() ||
+      row.label?.trim() ||
+      `Session ${row.id.slice(0, 6)}`
+    );
+  }, [addParentMode, sessions]);
+
+  // Set of session ids that *cannot* become a parent of the current
+  // child (the child itself, current parents, anything that would
+  // close a cycle). Used for visual feedback on cards.
+  const ineligibleAsParentIds = useMemo(() => {
+    if (!addParentMode) return new Set<string>();
+    const out = new Set<string>([addParentMode.childSessionId]);
+    const existing = parentsBySession[addParentMode.childSessionId] ?? [];
+    for (const p of existing) out.add(p);
+    for (const s of sessions) {
+      if (out.has(s.id)) continue;
+      if (wouldCreateCycle(addParentMode.childSessionId, s.id)) {
+        out.add(s.id);
+      }
+    }
+    return out;
+  }, [addParentMode, sessions, parentsBySession, wouldCreateCycle]);
+
   return (
     <section className="relative z-10 flex h-full min-h-0 flex-1 flex-col bg-background/80 backdrop-blur-sm">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 bg-card/50 px-4 py-3">
-        <NewTreeButton onClick={startNewTree} />
+        {addParentMode ? null : <NewTreeButton onClick={startNewTree} />}
 
-        {hasSelection ? (
+        {addParentMode ? (
+          <>
+            <span className="text-xs text-muted-foreground">
+              Click a session to add as a parent of{" "}
+              <span className="font-medium text-foreground">
+                “{addParentChildLabel}”
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={cancelAddParentMode}
+              className="ml-auto inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+              aria-label="Cancel adding a parent"
+            >
+              <XIcon className="size-3" />
+              Cancel
+            </button>
+          </>
+        ) : hasSelection ? (
           <>
             <span className="text-xs text-muted-foreground">
               {selectedIds.size} selected
@@ -301,6 +444,8 @@ export function ForestCanvas({ projectId }: Props) {
             const focused =
               target?.kind === "session" && target.sessionId === node.id;
             const isMerged = node.parentIds.length > 1;
+            const isAddParentTarget =
+              addParentMode != null && !ineligibleAsParentIds.has(node.id);
             return (
               <NodeCard
                 key={node.id}
@@ -312,9 +457,24 @@ export function ForestCanvas({ projectId }: Props) {
                 isLocked={node.pendingUserId != null}
                 presence={othersBySession[node.id] ?? []}
                 focused={focused}
-                isSelected={selectedIds.has(node.id)}
-                onSelect={() => toggleSelect(node.id)}
-                onClick={() => setTarget({ kind: "session", sessionId: node.id })}
+                isSelected={
+                  addParentMode ? false : selectedIds.has(node.id)
+                }
+                isAddParentCandidate={isAddParentTarget}
+                isAddParentDimmed={
+                  addParentMode != null &&
+                  ineligibleAsParentIds.has(node.id)
+                }
+                onSelect={
+                  addParentMode ? undefined : () => toggleSelect(node.id)
+                }
+                onClick={() => {
+                  if (addParentMode) {
+                    void addExistingParent(node.id);
+                  } else {
+                    setTarget({ kind: "session", sessionId: node.id });
+                  }
+                }}
               />
             );
           })}
@@ -373,6 +533,9 @@ export function ForestCanvas({ projectId }: Props) {
           onBranchOff={() => {
             if (target.kind === "session") void branchOff(target.sessionId);
           }}
+          onAddExistingBranch={
+            target.kind === "session" ? enterAddParentMode : undefined
+          }
           onOpenSession={(sessionId) =>
             setTarget({ kind: "session", sessionId })
           }

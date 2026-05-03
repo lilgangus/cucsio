@@ -3,6 +3,7 @@
 import {
   ArrowDownIcon,
   GitBranchIcon,
+  GitMergeIcon,
   LockIcon,
   SparklesIcon,
   UsersIcon,
@@ -124,6 +125,12 @@ export type OverlayProps = {
     inheritedSummary: string | null;
   } | null;
   onBranchOff: () => void;
+  /**
+   * Enter "pick an existing branch to merge in" mode. The parent canvas
+   * closes the overlay and waits for a node click in the forest, which
+   * inserts a `session_parents` row for the current session.
+   */
+  onAddExistingBranch?: () => void;
   /** Open a different session in the overlay (used by "Branched from" links). */
   onOpenSession: (sessionId: string) => void;
   onClose: () => void;
@@ -141,6 +148,7 @@ export function NodeOverlay(props: OverlayProps) {
     onSendNew,
     forkContext,
     onBranchOff,
+    onAddExistingBranch,
     onOpenSession,
     onClose,
   } = props;
@@ -403,6 +411,18 @@ export function NodeOverlay(props: OverlayProps) {
               <GitBranchIcon />
               New branch
             </Button>
+            {onAddExistingBranch ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onAddExistingBranch}
+                disabled={isPending || !sessionId}
+                aria-label="Add an existing session as a parent of this chat"
+              >
+                <GitMergeIcon />
+                Add existing branch
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="icon-sm"
@@ -425,19 +445,6 @@ export function NodeOverlay(props: OverlayProps) {
               parentLabels={parentLabels}
               onOpenSession={onOpenSession}
             />
-          ) : null}
-
-          {forkContext ? (
-            <div className="rounded-xl border border-blue-500/25 bg-blue-500/10 px-3 py-2 text-xs text-blue-900 dark:text-blue-100">
-              <p className="font-medium">
-                Context: {forkContext.ancestorTargets.join(" → ")}
-              </p>
-              {forkContext.inheritedSummary ? (
-                <p className="mt-1 line-clamp-3 text-[11px] text-blue-800/90 dark:text-blue-200/90">
-                  {forkContext.inheritedSummary}
-                </p>
-              ) : null}
-            </div>
           ) : null}
 
           {isPending ? (

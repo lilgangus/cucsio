@@ -29,6 +29,13 @@ type Props = {
   presence: PresenceState[];
   focused?: boolean;
   isSelected?: boolean;
+  /**
+   * "Add existing branch" mode is active and this card is a valid pick
+   * (not the child, not already a parent, no cycle). Highlighted.
+   */
+  isAddParentCandidate?: boolean;
+  /** "Add existing branch" mode is active but this card cannot be picked. */
+  isAddParentDimmed?: boolean;
   onSelect?: () => void;
   onClick?: () => void;
   className?: string;
@@ -52,6 +59,8 @@ export function NodeCard({
   presence,
   focused,
   isSelected,
+  isAddParentCandidate,
+  isAddParentDimmed,
   onSelect,
   onClick,
   className,
@@ -77,18 +86,27 @@ export function NodeCard({
       <div
         role="button"
         tabIndex={0}
-        aria-label={`Open chat: ${label}`}
+        aria-label={
+          isAddParentCandidate
+            ? `Add ${label} as a parent of the current chat`
+            : `Open chat: ${label}`
+        }
+        aria-disabled={isAddParentDimmed || undefined}
         onClick={() => onClick?.()}
         onKeyDown={onCardKeyDown}
         className={cn(
           "flex h-full w-full cursor-pointer flex-col items-stretch justify-between gap-1 rounded-2xl border bg-card px-3 py-2 text-left",
           "shadow-sm transition-all hover:scale-[1.02] hover:shadow-md",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          isSelected
-            ? "border-blue-500 ring-2 ring-blue-400/60 dark:border-blue-400 dark:ring-blue-300/50"
-            : focused
-              ? "border-primary/70 ring-2 ring-primary/40"
-              : "border-border hover:border-foreground/20"
+          isAddParentDimmed
+            ? "cursor-not-allowed border-dashed border-border opacity-40 hover:scale-100 hover:shadow-sm"
+            : isAddParentCandidate
+              ? "border-emerald-500 ring-2 ring-emerald-400/60 dark:border-emerald-400 dark:ring-emerald-300/50"
+              : isSelected
+                ? "border-blue-500 ring-2 ring-blue-400/60 dark:border-blue-400 dark:ring-blue-300/50"
+                : focused
+                  ? "border-primary/70 ring-2 ring-primary/40"
+                  : "border-border hover:border-foreground/20"
         )}
       >
         <div className="flex items-center justify-between gap-2">
@@ -113,24 +131,26 @@ export function NodeCard({
 
           <div className="flex items-center gap-1.5">
             <PresenceDots users={presence} />
-            <button
-              type="button"
-              aria-label={isSelected ? "Deselect node" : "Select node"}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect?.();
-              }}
-              onKeyDown={(e) => e.stopPropagation()}
-              className={cn(
-                "inline-flex size-5 items-center justify-center rounded-full border transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400",
-                isSelected
-                  ? "border-blue-500 bg-blue-500 text-white dark:border-blue-400 dark:bg-blue-400"
-                  : "border-border bg-card text-transparent hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950"
-              )}
-            >
-              <CheckIcon className="size-3" strokeWidth={3} />
-            </button>
+            {onSelect ? (
+              <button
+                type="button"
+                aria-label={isSelected ? "Deselect node" : "Select node"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect?.();
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                className={cn(
+                  "inline-flex size-5 items-center justify-center rounded-full border transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400",
+                  isSelected
+                    ? "border-blue-500 bg-blue-500 text-white dark:border-blue-400 dark:bg-blue-400"
+                    : "border-border bg-card text-transparent hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950"
+                )}
+              >
+                <CheckIcon className="size-3" strokeWidth={3} />
+              </button>
+            ) : null}
           </div>
         </div>
 
