@@ -5,6 +5,7 @@ import { getSupabaseServer } from "@/lib/supabase/server";
 import type { ProjectRow } from "@/types/db";
 
 import { RoomGuard } from "./room-guard";
+import { RoomProviders } from "./room-providers";
 import { TopBar } from "./top-bar";
 
 type Props = {
@@ -54,14 +55,17 @@ export default async function RoomLayout({ children, params }: Props) {
   >;
 
   return (
-    <div className="flex h-screen min-h-0 flex-col">
-      <RoomGuard roomCode={normalized} />
-      <TopBar
-        roomCode={normalized}
-        projectId={project.id}
-        projectName={project.name}
-      />
-      <div className="flex min-h-0 flex-1 flex-col">{children}</div>
-    </div>
+    <RoomProviders projectId={project.id}>
+      <div className="flex h-screen min-h-0 flex-col">
+        <RoomGuard roomCode={normalized} />
+        <TopBar
+          roomCode={normalized}
+          projectId={project.id}
+          projectName={project.name}
+          initialMasterContext={project.master_context}
+        />
+        <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+      </div>
+    </RoomProviders>
   );
 }

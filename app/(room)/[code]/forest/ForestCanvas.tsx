@@ -1,7 +1,13 @@
 "use client";
 
 import { PlusIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
 import { toast } from "sonner";
 
 import {
@@ -11,10 +17,10 @@ import {
   sendMessage,
 } from "@/lib/api";
 import { loadIdentity, type Identity } from "@/lib/identity";
+import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 import { cn } from "@/lib/utils";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import type { MessageRow } from "@/types/db";
-
 import {
   buildForestFromSessions,
   layoutForest,
@@ -32,8 +38,7 @@ import type { NodePosition, OverlayTarget } from "./types";
 /**
  * The main forest surface. Owns:
  *   - subscriptions for the project's sessions + lock state
- *   - subscriptions for per-session presence (so cards can show
- *     "Alice + Bob in here right now")
+ *   - Per-session `session:{id}` realtime presence (icons on each branch + overlay)
  *   - the layout pass (memoized on the live session list)
  *   - which session, if any, is "popped up" in the overlay
  *
@@ -66,8 +71,20 @@ type ScrollToMessageDetail = {
 export function ForestCanvas({ projectId }: Props) {
   const { sessions, loading, error } = useProjectSessions(projectId);
   const [target, setTarget] = useState<OverlayTarget | null>(null);
+<<<<<<< HEAD
   const [pendingScrollTarget, setPendingScrollTarget] =
     useState<ScrollToMessageDetail | null>(null);
+=======
+  const { setFocusedSessionId } = useSessionFocus();
+
+  /** Session channel we occupy for presence (`new-fork` stays on parent until fork exists). */
+  const activePresenceSessionId =
+    target?.kind === "session"
+      ? target.sessionId
+      : target?.kind === "new-fork"
+        ? target.parentSessionId
+        : null;
+>>>>>>> main
 
   // History captured at the moment Branch Off is clicked, so the
   // overlay can render the parent's messages while the fork API is
@@ -77,15 +94,19 @@ export function ForestCanvas({ projectId }: Props) {
   const forest = useMemo(() => buildForestFromSessions(sessions), [sessions]);
   const layout = useMemo(() => layoutForest(forest), [forest]);
 
-  // Per-session presence for badge rendering on each card. Single
-  // hook owns all per-session channels (avoids the supabase-js channel
-  // dedup that fires "cannot add presence callbacks after subscribe()").
   const sessionIds = useMemo(() => sessions.map((s) => s.id), [sessions]);
-  const activeSessionId = target?.kind === "session" ? target.sessionId : null;
   const presenceBySession = useForestPresence({
     sessionIds,
-    activeSessionId,
+    activeSessionId: activePresenceSessionId,
   });
+
+  useLayoutEffect(() => {
+    setFocusedSessionId(activePresenceSessionId);
+  }, [activePresenceSessionId, setFocusedSessionId]);
+
+  useLayoutEffect(() => {
+    return () => setFocusedSessionId(null);
+  }, [setFocusedSessionId]);
 
   // Filter out self for the card-level "others present" indicator —
   // seeing your own dot on every card you've ever opened is noisy.
@@ -260,7 +281,9 @@ export function ForestCanvas({ projectId }: Props) {
           presence={
             target.kind === "session"
               ? (presenceBySession[target.sessionId] ?? [])
-              : []
+              : target.kind === "new-fork"
+                ? (presenceBySession[target.parentSessionId] ?? [])
+                : []
           }
           prefetchedMessages={
             target.kind === "new-fork" ? pendingForkHistory : undefined

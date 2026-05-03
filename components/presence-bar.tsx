@@ -6,10 +6,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { PresenceState } from "@/lib/realtime/channels";
-import { useProjectPresence } from "@/lib/realtime/use-presence";
+import { useProjectPeers } from "@/lib/realtime/project-presence-context";
 
 type Props = {
-  projectId: string;
   /** Maximum number of avatars to render before collapsing into a "+N" pill. */
   max?: number;
 };
@@ -29,7 +28,16 @@ function shortId(clientId: string): string {
   return clientId.slice(0, 8);
 }
 
+function focusChip(focusedSessionId?: string | null): string | null {
+  if (focusedSessionId == null || focusedSessionId === "") return null;
+  const x = focusedSessionId;
+  const short =
+    x.length <= 14 ? `${x.slice(0, 8)}…` : `${x.slice(0, 6)}…${x.slice(-4)}`;
+  return `Focused session ${short}`;
+}
+
 function Avatar({ user }: { user: PresenceState }) {
+  const subtitle = focusChip(user.focusedSessionId);
   return (
     <Tooltip>
       <TooltipTrigger
@@ -37,15 +45,22 @@ function Avatar({ user }: { user: PresenceState }) {
           <span
             className={`${AVATAR_SIZE} ${STACK_OVERLAP} inline-flex items-center justify-center rounded-full text-[10px] font-medium text-white ring-2 ring-background select-none`}
             style={{ background: user.color }}
-            aria-label={user.displayName}
+            aria-label={`${user.displayName}${subtitle ? ` — ${subtitle}` : ""}`}
           >
             {initials(user.displayName)}
           </span>
         }
       />
       <TooltipContent>
-        <div className="flex flex-col gap-0.5">
+        <div className="flex max-w-[220px] flex-col gap-0.5">
           <span className="font-medium">{user.displayName}</span>
+          {subtitle ? (
+            <span className="text-xs text-muted-foreground">{subtitle}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Browsing the tree (no chat open)
+            </span>
+          )}
           <span className="font-mono text-[10px] opacity-70">
             {shortId(user.clientId)}
           </span>
@@ -56,13 +71,11 @@ function Avatar({ user }: { user: PresenceState }) {
 }
 
 /**
- * Live presence list in the room top bar. Subscribes to the project's
- * Realtime channel and renders one colored avatar per connected client.
- * Hovering an avatar shows the display name + first 8 chars of the
- * clientId. Collapses into a `+N` pill past `max`.
+ * Live presence in the room top bar. Mirrors `focusedSessionId` from
+ * `project:{projectId}` stream (derived in `ForestCanvas`).
  */
-export function PresenceBar({ projectId, max = 5 }: Props) {
-  const users = useProjectPresence(projectId);
+export function PresenceBar({ max = 5 }: Props) {
+  const users = useProjectPeers();
 
   if (users.length === 0) {
     return null;
@@ -88,10 +101,25 @@ export function PresenceBar({ projectId, max = 5 }: Props) {
             }
           />
           <TooltipContent>
-            <div className="flex flex-col gap-0.5">
+            <div className="flex max-w-[220px] flex-col gap-0.5">
               {users.slice(max).map((user) => (
                 <span key={user.clientId}>
-                  {user.displayName}{" "}
+                  <span className="font-medium">{user.displayName}</span>
+                  {focusChip(user.focusedSessionId) ? (
+                    <>
+                      {" "}
+                      <span className="text-xs text-muted-foreground">
+                        — {focusChip(user.focusedSessionId)}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      {" "}
+                      <span className="text-xs text-muted-foreground">
+                        — Browsing tree
+                      </span>
+                    </>
+                  )}{" "}
                   <span className="font-mono opacity-70">
                     {shortId(user.clientId)}
                   </span>

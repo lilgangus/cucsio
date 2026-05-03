@@ -32,6 +32,49 @@ import type { PresenceState } from "@/lib/realtime/channels";
 import { cn } from "@/lib/utils";
 import type { MessageRow, SessionRow } from "@/types/db";
 
+<<<<<<< HEAD
+=======
+import {
+  type MessageAuthorSnippet,
+  useSessionMessages,
+} from "./hooks";
+
+/** Collapsed label beside a user bubble (AGENTS collision rule: `#first4` of identity id). */
+type SenderChip = { label: string; color: string };
+
+function resolveSenderChip(
+  userId: string,
+  snippets: Record<string, MessageAuthorSnippet>,
+  presence: PresenceState[],
+  identity: Identity | null
+): SenderChip {
+  if (identity?.clientId === userId) {
+    return {
+      label: `${identity.displayName}#${userId.slice(0, 4)}`,
+      color: identity.color,
+    };
+  }
+  const row = snippets[userId];
+  if (row) {
+    return {
+      label: `${row.display_name}#${userId.slice(0, 4)}`,
+      color: row.color,
+    };
+  }
+  const live = presence.find((p) => p.clientId === userId);
+  if (live) {
+    return {
+      label: `${live.displayName}#${userId.slice(0, 4)}`,
+      color: live.color,
+    };
+  }
+  return {
+    label: `Unknown#${userId.slice(0, 4)}`,
+    color: "#64748b",
+  };
+}
+
+>>>>>>> main
 /**
  * The "popped-up" view of one chat session. Three modes (driven by the
  * parent's `target` prop):
@@ -91,7 +134,29 @@ export function NodeOverlay(props: OverlayProps) {
   } = props;
 
   const sessionId = session?.id ?? null;
+<<<<<<< HEAD
   const messages = prefetchedMessages ?? [];
+=======
+
+  // Live messages still come from this component (no channel-dedup
+  // risk: the messages hook uses a `session-messages:<id>` topic that
+  // no other hook subscribes to).
+  const {
+    messages: liveMessages,
+    loading: messagesLoading,
+    authorsByUserId,
+    ensureAuthorsKnown,
+  } = useSessionMessages(sessionId, prefetchedMessages ?? null);
+
+  const messages = useMemo(() => {
+    // Prefer live data once it arrives. Until then show whatever
+    // history the parent passed in (e.g. for a freshly-forked session).
+    if (sessionId && (liveMessages.length > 0 || !messagesLoading)) {
+      return liveMessages;
+    }
+    return prefetchedMessages ?? [];
+  }, [sessionId, liveMessages, messagesLoading, prefetchedMessages]);
+>>>>>>> main
 
   // Identity / presence filtering --------------------------------------
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -133,10 +198,28 @@ export function NodeOverlay(props: OverlayProps) {
   const lockedBy = session?.pending_user_id ?? null;
   const lockedBySelf = lockedBy != null && lockedBy === identity?.clientId;
   const lockedByOther = lockedBy != null && !lockedBySelf;
-  const lockOwner = useMemo(() => {
-    if (!lockedByOther) return null;
-    return presence.find((p) => p.clientId === lockedBy) ?? null;
-  }, [lockedByOther, lockedBy, presence]);
+  useEffect(() => {
+    if (!lockedByOther || !lockedBy) return;
+    if (presence.some((p) => p.clientId === lockedBy) || authorsByUserId[lockedBy])
+      return;
+    ensureAuthorsKnown([lockedBy]);
+  }, [
+    lockedByOther,
+    lockedBy,
+    presence,
+    authorsByUserId,
+    ensureAuthorsKnown,
+  ]);
+
+  const lockSenderChip = useMemo(() => {
+    if (!lockedByOther || !lockedBy) return null;
+    return resolveSenderChip(
+      lockedBy,
+      authorsByUserId,
+      presence,
+      identity
+    );
+  }, [authorsByUserId, identity, lockedBy, lockedByOther, presence]);
 
   // Send action --------------------------------------------------------
   const [draft, setDraft] = useState("");
@@ -268,6 +351,7 @@ export function NodeOverlay(props: OverlayProps) {
                 <EmptyHint text="Branching... first send will create the fork." />
               ) : null}
 
+<<<<<<< HEAD
               {messages.map((m) => (
                 <ChatBubble
                   key={m.id}
@@ -293,15 +377,40 @@ export function NodeOverlay(props: OverlayProps) {
           ) : (
             <EmptyHint text="Reload the room to restore your local identity." />
           )}
+=======
+          {messages.map((m) => (
+            <ChatBubble
+              key={m.id}
+              role={m.role === "assistant" ? "assistant" : "user"}
+              content={m.content}
+              senderChip={
+                m.role === "user" && m.author_id
+                  ? resolveSenderChip(
+                      m.author_id,
+                      authorsByUserId,
+                      presence,
+                      identity
+                    )
+                  : null
+              }
+            />
+          ))}
+
+          {messagesLoading && messages.length === 0 && !isPending ? (
+            <p className="text-center text-xs text-muted-foreground">
+              Loading messages…
+            </p>
+          ) : null}
+>>>>>>> main
         </div>
 
         {isPending && lockedByOther ? (
           <div className="flex items-center gap-2 border-t border-amber-500/30 bg-amber-500/10 px-5 py-2 text-xs text-amber-700 dark:text-amber-300">
             <LockIcon className="size-3.5" />
             <span>
-              {lockOwner
-                ? `${lockOwner.displayName} is sending...`
-                : "Someone is sending..."}
+              {lockSenderChip
+                ? `${lockSenderChip.label} is sending…`
+                : "Someone is sending…"}
               {" "}Inputs are paused until the reply lands.
             </span>
           </div>
@@ -405,25 +514,25 @@ function PresenceChip({ others }: { others: PresenceState[] }) {
 function ChatBubble({
   role,
   content,
-  author,
+  senderChip,
 }: {
   role: "user" | "assistant";
   content: string;
-  author: PresenceState | null;
+  senderChip: SenderChip | null;
 }) {
   const isUser = role === "user";
   return (
     <div className={cn("flex w-full flex-col gap-1", isUser ? "items-end" : "items-start")}>
-      {isUser && author ? (
+      {isUser && senderChip ? (
         <span
           className="flex items-center gap-1 px-1 text-[10px] text-muted-foreground"
         >
           <span
             className="inline-block size-2 rounded-full"
-            style={{ background: author.color }}
+            style={{ background: senderChip.color }}
             aria-hidden
           />
-          {author.displayName}
+          <span>{senderChip.label}</span>
         </span>
       ) : null}
       <div

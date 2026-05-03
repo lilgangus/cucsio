@@ -1,12 +1,50 @@
 "use client";
 
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { loadIdentity } from "@/lib/identity";
 import { sessionChannel, type PresenceState } from "@/lib/realtime/channels";
+import { peersFromRealtimePresence } from "@/lib/realtime/presence-peers";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
-import type { MessageRow, SessionRow } from "@/types/db";
+import type {
+  MessageRow,
+  SessionParticipantRow,
+  SessionRow,
+  UserRow,
+} from "@/types/db";
+
+/** Snapshot from `users` for message attribution (presence is ephemeral). */
+export type MessageAuthorSnippet = Pick<UserRow, "id" | "display_name" | "color">;
+
+function collectAuthorIds(messages: Iterable<MessageRow>): string[] {
+  const out = new Set<string>();
+  for (const m of messages) {
+    if (m.author_id) out.add(m.author_id);
+  }
+  return [...out];
+}
+
+async function fetchAuthorSnippets(
+  supabase: ReturnType<typeof getSupabaseBrowser>,
+  ids: string[]
+): Promise<MessageAuthorSnippet[]> {
+  const uniq = [...new Set(ids)];
+  if (uniq.length === 0) return [];
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, display_name, color")
+    .in("id", uniq);
+  if (error || !data) return [];
+  return data as MessageAuthorSnippet[];
+}
 
 /**
  * Live data hooks for the forest UI.
@@ -124,32 +162,109 @@ export function useProjectSessions(projectId: string | null): {
 }
 
 /**
- * Live list of messages in one session. Skips the subscription
- * entirely when `sessionId` is null (e.g. overlay closed) so we don't
- * burn a websocket on nothing.
+ * Live list of messages for one session. No realtime subscription while
+ * `sessionId` is null, but prefetch rows still drive `users`-row hydration
+ * (pending fork overlay). Attribution maps `messages.author_id` → `users`
+ * so bubbles don&apos;t rely on ephemeral presence alone.
  */
-export function useSessionMessages(sessionId: string | null): {
+export function useSessionMessages(
+  sessionId: string | null,
+  /** Visible seed rows before fetch (fork overlay); also drives author hydration while sessionId is null. */
+  prefetchMessages?: MessageRow[] | null
+): {
   messages: MessageRow[];
+  authorsByUserId: Record<string, MessageAuthorSnippet>;
+  /** Load `users` rows for the given IDs (fire-and-forget; merge is idempotent). */
+  ensureAuthorsKnown: (userIds: string[]) => void;
   loading: boolean;
   error: string | null;
 } {
   const [messages, setMessages] = useState<MessageRow[]>([]);
+  const [authorsByUserId, setAuthorsByUserId] = useState<
+    Record<string, MessageAuthorSnippet>
+  >({});
   const [loading, setLoading] = useState<boolean>(sessionId !== null);
   const [error, setError] = useState<string | null>(null);
 
+  /** Avoid re-subscribing `session-messages:*` every time fork seed arrays are re-created. */
+  const prefetchMessagesRef = useRef(prefetchMessages);
+  useLayoutEffect(() => {
+    prefetchMessagesRef.current = prefetchMessages;
+  }, [prefetchMessages]);
+
+  const mergeSnippetRows = useCallback((rows: MessageAuthorSnippet[]) => {
+    if (rows.length === 0) return;
+    setAuthorsByUserId((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const row of rows) {
+        const existing = next[row.id];
+        if (
+          !existing ||
+          existing.display_name !== row.display_name ||
+          existing.color !== row.color
+        ) {
+          next[row.id] = row;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const ensureAuthorsKnown = useCallback(
+    (userIds: string[]) => {
+      const uniq = [...new Set(userIds.filter(Boolean))];
+      if (uniq.length === 0) return;
+      void (async () => {
+        const supabase = getSupabaseBrowser();
+        const rows = await fetchAuthorSnippets(supabase, uniq);
+        mergeSnippetRows(rows);
+      })();
+    },
+    [mergeSnippetRows]
+  );
+
+  /** User rows for seed transcript (handles pending fork with sessionId == null). */
+  useEffect(() => {
+    const seed = prefetchMessages;
+    if (!seed?.length) return;
+    const supabase = getSupabaseBrowser();
+    let stale = false;
+    void (async () => {
+      const rows = await fetchAuthorSnippets(supabase, collectAuthorIds(seed));
+      if (stale) return;
+      mergeSnippetRows(rows);
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [prefetchMessages, mergeSnippetRows]);
+
   useEffect(() => {
     if (!sessionId) {
-      // Resetting state when the input "external param" goes null is
-      // the canonical sync-with-external-system effect; the lint rule
-      // is a heuristic so we suppress here.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages([]);
       setLoading(false);
+      setError(null);
       return;
     }
-    setLoading(true);
-    const supabase = getSupabaseBrowser();
+
     let cancelled = false;
+    const supabase = getSupabaseBrowser();
+
+    const hydrateAuthors = async (ids: string[]) => {
+      const uniq = [...new Set(ids.filter(Boolean))];
+      if (uniq.length === 0 || cancelled) return;
+      const rows = await fetchAuthorSnippets(supabase, uniq);
+      if (cancelled) return;
+      mergeSnippetRows(rows);
+    };
+
+    setLoading(true);
+    void hydrateAuthors(
+      collectAuthorIds(prefetchMessagesRef.current ?? [])
+    );
 
     (async () => {
       const { data, error: err } = await supabase
@@ -164,7 +279,10 @@ export function useSessionMessages(sessionId: string | null): {
         setLoading(false);
         return;
       }
-      setMessages((data ?? []) as MessageRow[]);
+      const rows = (data ?? []) as MessageRow[];
+      await hydrateAuthors(collectAuthorIds(rows));
+      if (cancelled) return;
+      setMessages(rows);
       setLoading(false);
     })();
 
@@ -183,6 +301,7 @@ export function useSessionMessages(sessionId: string | null): {
           setMessages((prev) =>
             prev.some((m) => m.id === row.id) ? prev : [...prev, row]
           );
+          void hydrateAuthors(row.author_id ? [row.author_id] : []);
         }
       )
       .subscribe();
@@ -192,38 +311,25 @@ export function useSessionMessages(sessionId: string | null): {
       void channel.unsubscribe();
       void supabase.removeChannel(channel);
     };
-  }, [sessionId]);
+  }, [sessionId, mergeSnippetRows]);
 
-  return { messages, loading, error };
+  return {
+    messages,
+    authorsByUserId,
+    ensureAuthorsKnown,
+    loading,
+    error,
+  };
 }
 
 /**
- * Per-session presence for the whole forest, in one place.
+ * Per-session `session:{id}` realtime presence — the source of truth for “who has
+ * this chat popped open”. One forest hook owns every session channel so we never
+ * double-subscribe after `subscribe()` (see duplicate-channel footgun in hooks header).
  *
- * Why a single hook instead of one per call site:
- *
- *   `supabase.channel(topic)` *reuses* an existing channel if one with
- *   the same topic already exists (RealtimeClient.channel: "If a
- *   channel with the same topic already exists it will be returned
- *   instead of creating a duplicate connection."). If two hooks both
- *   ask for the `session:<id>` channel and each calls `.on('presence',
- *   …)` after the first one has already triggered `subscribe()`, the
- *   second `.on()` throws:
- *     "cannot add `presence` callbacks for realtime:session:<id>
- *      after `subscribe()`."
- *
- *   So we have one owner of the per-session channels — this hook,
- *   mounted by the canvas — and we share its results with the overlay
- *   via props.
- *
- * Tracking: we only call `track()` on the channel for `activeSessionId`.
- * That way opening a node makes you "present" in it; closing the
- * overlay (or switching nodes) untracks. Just being in the room
- * doesn't make you appear in every node.
- *
- * Strict-mode-friendly: channels are owned in a ref and torn down on
- * unmount. The per-id diff in the sessionIds effect adds new channels
- * and removes stale ones rather than re-creating the whole set.
+ * Tracks only **one** topic at a time (the popped overlay session, or parent while
+ * a fork is pending). Every other subscribed topic stays `untracked`, but listeners
+ * still receive everyone else&apos;s payloads for card dots across the tree.
  */
 export function useForestPresence({
   sessionIds,
@@ -232,127 +338,325 @@ export function useForestPresence({
   sessionIds: string[];
   activeSessionId: string | null;
 }): Record<string, PresenceState[]> {
-  const [byId, setById] = useState<Record<string, PresenceState[]>>({});
-  const channelsRef = useRef<Map<string, RealtimeChannel>>(new Map());
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
-  // Stable comma-joined key so identical-content arrays don't refire.
+  const [byId, setById] = useState<Record<string, PresenceState[]>>({});
+  const channelsRef = useRef(new Map<string, RealtimeChannel>());
+  const activeRef = useRef<string | null>(activeSessionId);
+  const activeTrackedRef = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    activeRef.current = activeSessionId;
+  }, [activeSessionId]);
+
   const sessionIdsKey = useMemo(
     () => sessionIds.slice().sort().join(","),
     [sessionIds]
   );
 
-  // 1. Maintain a channel per session id (add/remove on diff). One
-  //    owner per topic, so no `.channel(name)` collision with anyone
-  //    else in the app.
-  useEffect(() => {
-    const supabase = getSupabaseBrowser();
-    const identity = loadIdentity();
-    const want = new Set(sessionIds);
-    const have = channelsRef.current;
+  const viewerClientId = mounted ? loadIdentity()?.clientId ?? null : null;
 
-    // Tear down channels for sessions that no longer exist.
-    for (const [id, ch] of [...have.entries()]) {
-      if (want.has(id)) continue;
-      void ch.unsubscribe();
-      void supabase.removeChannel(ch);
-      have.delete(id);
-      setById((prev) => {
-        if (!(id in prev)) return prev;
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
+  useEffect(() => {
+    if (!mounted || !viewerClientId) {
+      setById({});
+      return undefined;
     }
 
-    // Add channels for newly-discovered sessions.
+    const supabase = getSupabaseBrowser();
+    const have = channelsRef.current;
+
+    /** Full rebuild avoids stale sockets when identities / session lists shift. */
+    for (const ch of have.values()) {
+      void ch.unsubscribe();
+      void supabase.removeChannel(ch);
+    }
+    have.clear();
+    activeTrackedRef.current = null;
+
+    const seeded: Record<string, PresenceState[]> = {};
     for (const id of sessionIds) {
+      seeded[id] = [];
+    }
+    setById(seeded);
+
+    for (const id of sessionIds) {
+<<<<<<< HEAD
       if (have.has(id)) continue;
       // Use a dedicated topic so this channel never collides with the
       // session broadcast+postgres_changes channel in useChatSession.
       // supabase.channel() reuses an existing channel by topic; calling
       // .on("postgres_changes") on an already-subscribed channel throws.
       const ch = supabase.channel(`presence:${id}`, {
+=======
+      const ch = supabase.channel(sessionChannel(id), {
+>>>>>>> main
         config: {
           presence: {
-            key: identity?.clientId ?? `anon-${crypto.randomUUID()}`,
+            key: viewerClientId,
           },
         },
       });
-      const sync = () => {
-        const state = ch.presenceState<PresenceState>();
-        const seen = new Map<string, PresenceState>();
-        for (const refList of Object.values(state)) {
-          for (const entry of refList) {
-            if (!entry?.clientId) continue;
-            if (!seen.has(entry.clientId)) seen.set(entry.clientId, entry);
+      const flush = () =>
+        setById((prev) => ({
+          ...prev,
+          [id]: peersFromRealtimePresence(ch),
+        }));
+      ch.on("presence", { event: "sync" }, flush)
+        .on("presence", { event: "join" }, flush)
+        .on("presence", { event: "leave" }, flush)
+        .subscribe(async (status) => {
+          if (status === "SUBSCRIBED") {
+            // If this session is currently focused, immediately claim presence here.
+            const identity = loadIdentity();
+            if (identity && activeRef.current === id) {
+              try {
+                await ch.track({
+                  clientId: identity.clientId,
+                  displayName: identity.displayName,
+                  color: identity.color,
+                  joinedAt: new Date().toISOString(),
+                });
+                activeTrackedRef.current = id;
+              } catch {
+                /* track can race on reconnect */
+              }
+            }
+            flush();
           }
-        }
-        const next = [...seen.values()].sort((a, b) =>
-          a.joinedAt.localeCompare(b.joinedAt)
-        );
-        setById((prev) => ({ ...prev, [id]: next }));
-      };
-      ch.on("presence", { event: "sync" }, sync)
-        .on("presence", { event: "join" }, sync)
-        .on("presence", { event: "leave" }, sync)
-        .subscribe();
+        });
       have.set(id, ch);
     }
-    // No cleanup here — diff-based add/remove above plus the unmount
-    // effect below handle tear-down. Returning a no-op also keeps
-    // Strict Mode from tearing down everything between the two
-    // double-invoked mounts.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionIdsKey]);
-
-  // 2. Track ourselves on the active session only. `.track()` is
-  //    queued until the channel reports SUBSCRIBED, so we don't need
-  //    a join-state listener.
-  useEffect(() => {
-    if (!activeSessionId) return;
-    const identity = loadIdentity();
-    if (!identity) return;
-    const ch = channelsRef.current.get(activeSessionId);
-    if (!ch) return;
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        await ch.track({
-          clientId: identity.clientId,
-          displayName: identity.displayName,
-          color: identity.color,
-          joinedAt: new Date().toISOString(),
-        } satisfies PresenceState);
-      } catch (err) {
-        if (!cancelled) {
-          console.warn("[forest presence] track failed", err);
-        }
-      }
-    })();
 
     return () => {
-      cancelled = true;
-      // Best-effort untrack; if the channel is already gone (e.g.
-      // session deleted), Supabase quietly no-ops.
-      void ch.untrack().catch(() => undefined);
-    };
-  }, [activeSessionId]);
-
-  // 3. Tear everything down on unmount. (Strict Mode will run this
-  //    between its double mounts; the sessionIds effect re-creates
-  //    the channels on the second mount.)
-  useEffect(() => {
-    const channels = channelsRef.current;
-    return () => {
-      const supabase = getSupabaseBrowser();
-      for (const ch of channels.values()) {
+      for (const ch of have.values()) {
         void ch.unsubscribe();
         void supabase.removeChannel(ch);
       }
-      channels.clear();
+      have.clear();
+      activeTrackedRef.current = null;
+      setById({});
     };
-  }, []);
+  }, [sessionIdsKey, mounted, viewerClientId]); // eslint-disable-line react-hooks/exhaustive-deps -- sessionIdsKey gates list
+
+  /** Hop presence immediately on focus changes (untrack previous + track next). */
+  useEffect(() => {
+    if (!mounted || !viewerClientId) {
+      return undefined;
+    }
+
+    const hop = async () => {
+      const identity = loadIdentity();
+      if (!identity) return;
+      const active = activeSessionId;
+      const prev = activeTrackedRef.current;
+      const have = channelsRef.current;
+
+      if (prev && prev !== active) {
+        const prevCh = have.get(prev);
+        try {
+          await prevCh?.untrack();
+        } catch {
+          /* noop */
+        }
+      }
+
+      if (active) {
+        const nextCh = have.get(active);
+        if (nextCh) {
+          try {
+            await nextCh.track({
+              clientId: identity.clientId,
+              displayName: identity.displayName,
+              color: identity.color,
+              joinedAt: new Date().toISOString(),
+            });
+            activeTrackedRef.current = active;
+          } catch {
+            /* noop */
+          }
+        }
+      } else {
+        activeTrackedRef.current = null;
+      }
+    };
+
+    void hop();
+
+    const heartbeat = window.setInterval(() => {
+      const identity = loadIdentity();
+      const active = activeSessionId;
+      const ch = active ? channelsRef.current.get(active) : null;
+      if (!identity || !ch) return;
+      void ch.track({
+        clientId: identity.clientId,
+        displayName: identity.displayName,
+        color: identity.color,
+        joinedAt: new Date().toISOString(),
+      });
+    }, 10000);
+
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        void hop();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      window.clearInterval(heartbeat);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [activeSessionId, mounted, viewerClientId]);
+
+  return byId;
+}
+
+type SessionParticipantRowLike = Pick<
+  SessionParticipantRow,
+  "session_id" | "user_id" | "joined_at" | "last_active_at"
+>;
+type UserSnippet = Pick<UserRow, "id" | "display_name" | "color">;
+
+/**
+ * Polling fallback for session occupancy:
+ * - heartbeat writes `session_participants.last_active_at` while a session is focused
+ * - periodic reads pull recently-active users per session id
+ *
+ * This keeps tree icons / overlay participant chips responsive even when
+ * websocket presence has transient lag.
+ */
+export function useSessionOccupancyPolling({
+  sessionIds,
+  activeSessionId,
+  pollMs = 6000,
+  activeWindowMs = 25000,
+}: {
+  sessionIds: string[];
+  activeSessionId: string | null;
+  pollMs?: number;
+  activeWindowMs?: number;
+}): Record<string, PresenceState[]> {
+  const [byId, setById] = useState<Record<string, PresenceState[]>>({});
+  const sessionIdsKey = useMemo(
+    () => sessionIds.slice().sort().join(","),
+    [sessionIds]
+  );
+
+  // Heartbeat the currently-focused session participant row.
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const supabase = getSupabaseBrowser();
+
+    const beat = async () => {
+      const me = loadIdentity();
+      if (!me) return;
+      const now = new Date().toISOString();
+      await supabase.from("session_participants").upsert(
+        {
+          session_id: activeSessionId,
+          user_id: me.clientId,
+          joined_at: now,
+          last_active_at: now,
+        },
+        { onConflict: "session_id,user_id" }
+      );
+    };
+
+    void beat();
+    const hb = window.setInterval(() => {
+      void beat();
+    }, 10000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        void beat();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      window.clearInterval(hb);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [activeSessionId]);
+
+  // Pull recently-active participants for all visible session ids.
+  useEffect(() => {
+    if (sessionIds.length === 0) {
+      setById({});
+      return;
+    }
+
+    const supabase = getSupabaseBrowser();
+    let stale = false;
+
+    const seed: Record<string, PresenceState[]> = {};
+    for (const id of sessionIds) seed[id] = [];
+    setById(seed);
+
+    const refresh = async () => {
+      const cutoff = new Date(Date.now() - activeWindowMs).toISOString();
+
+      const { data: participantsRaw, error } = await supabase
+        .from("session_participants")
+        .select("session_id, user_id, joined_at, last_active_at")
+        .in("session_id", sessionIds)
+        .gt("last_active_at", cutoff);
+      if (stale || error || !participantsRaw) return;
+
+      const participants = participantsRaw as SessionParticipantRowLike[];
+      const userIds = [...new Set(participants.map((p) => p.user_id))];
+
+      let usersById = new Map<string, UserSnippet>();
+      if (userIds.length > 0) {
+        const { data: usersRaw } = await supabase
+          .from("users")
+          .select("id, display_name, color")
+          .in("id", userIds);
+        if (stale) return;
+        usersById = new Map(
+          ((usersRaw ?? []) as UserSnippet[]).map((u) => [u.id, u])
+        );
+      }
+
+      const out: Record<string, PresenceState[]> = {};
+      for (const id of sessionIds) out[id] = [];
+      for (const p of participants) {
+        const u = usersById.get(p.user_id);
+        out[p.session_id]?.push({
+          clientId: p.user_id,
+          displayName: u?.display_name ?? "Someone",
+          color: u?.color ?? "#94a3b8",
+          joinedAt: p.last_active_at || p.joined_at,
+          focusedSessionId: p.session_id,
+        });
+      }
+      for (const id of sessionIds) {
+        out[id]?.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
+      }
+      setById(out);
+    };
+
+    void refresh();
+    const t = window.setInterval(() => {
+      void refresh();
+    }, pollMs);
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      stale = true;
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sessionIdsKey gates identity of session list
+  }, [sessionIdsKey, pollMs, activeWindowMs]);
 
   return byId;
 }

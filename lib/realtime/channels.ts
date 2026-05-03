@@ -77,4 +77,14 @@ export type PresenceState = {
   displayName: string;
   color: string;
   joinedAt: string;
+  /**
+   * For **project-channel** presence: which session node's chat overlay
+   * this client currently has focused (ForestCanvas `session` overlay).
+   * `null` / omitted means they are only browsing the tree (no chat open).
+   *
+   * For **session-channel** presence (inside `session:<id>`) this mirrors
+   * the channel id implicitly — callers may omit it or set it to the
+   * same session id as a sanity check.
+   */
+  focusedSessionId?: string | null;
 };
