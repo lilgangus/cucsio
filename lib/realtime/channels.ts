@@ -6,11 +6,16 @@ import type {
 } from "@/types/db";
 
 /**
- * Two channels per project (see AGENTS.md):
+ * Realtime topic conventions (see AGENTS.md):
  *   - project:{projectId}  — broadcast: master context edits, new sessions,
  *                            new highlights, session metadata bumps.
  *   - session:{sessionId}  — broadcast: new messages, assistant chunks;
- *                            presence: who is currently viewing.
+ *                            Postgres message changes.
+ *   - project-presence:{projectId} - room-level presence.
+ *   - presence:{sessionId} - forest overlay/card presence only.
+ *
+ * Keep presence off broadcast / Postgres-change topics so a presence-only
+ * subscriber cannot subscribe first and prevent later callback registration.
  *
  * The DB is the source of truth; broadcast events are eventually-consistent
  * hints. If a client misses a broadcast, the next read from Postgres will
@@ -19,6 +24,9 @@ import type {
 
 export const projectChannel = (projectId: string) => `project:${projectId}`;
 export const sessionChannel = (sessionId: string) => `session:${sessionId}`;
+export const projectPresenceChannel = (projectId: string) =>
+  `project-presence:${projectId}`;
+export const presenceChannel = (sessionId: string) => `presence:${sessionId}`;
 
 export const PROJECT_BROADCAST_EVENT = "project_event";
 export const SESSION_BROADCAST_EVENT = "session_event";
@@ -78,13 +86,13 @@ export type PresenceState = {
   color: string;
   joinedAt: string;
   /**
-   * For **project-channel** presence: which session node's chat overlay
+   * For **project presence** (inside `project-presence:<id>`): which session node's chat overlay
    * this client currently has focused (ForestCanvas `session` overlay).
    * `null` / omitted means they are only browsing the tree (no chat open).
    *
-   * For **session-channel** presence (inside `session:<id>`) this mirrors
-   * the channel id implicitly — callers may omit it or set it to the
-   * same session id as a sanity check.
+   * For **session presence** (inside `presence:<id>`) this mirrors the
+   * channel id implicitly; callers may omit it or set it to the same
+   * session id as a sanity check.
    */
   focusedSessionId?: string | null;
 };

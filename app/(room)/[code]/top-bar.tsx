@@ -67,6 +67,7 @@ export function TopBar({
   const masterTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMasterContext(initialMasterContext);
     masterLastWrittenRef.current = initialMasterContext;
   }, [initialMasterContext]);

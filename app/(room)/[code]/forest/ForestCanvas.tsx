@@ -38,7 +38,7 @@ import type { NodePosition, OverlayTarget } from "./types";
 /**
  * The main forest surface. Owns:
  *   - subscriptions for the project's sessions + lock state
- *   - Per-session `session:{id}` realtime presence (icons on each branch + overlay)
+ *   - Per-session `presence:{id}` realtime presence (icons on each branch + overlay)
  *   - the layout pass (memoized on the live session list)
  *   - which session, if any, is "popped up" in the overlay
  *
@@ -71,20 +71,17 @@ type ScrollToMessageDetail = {
 export function ForestCanvas({ projectId }: Props) {
   const { sessions, loading, error } = useProjectSessions(projectId);
   const [target, setTarget] = useState<OverlayTarget | null>(null);
-<<<<<<< HEAD
   const [pendingScrollTarget, setPendingScrollTarget] =
     useState<ScrollToMessageDetail | null>(null);
-=======
   const { setFocusedSessionId } = useSessionFocus();
 
-  /** Session channel we occupy for presence (`new-fork` stays on parent until fork exists). */
+  /** Presence topic we occupy (`new-fork` stays on parent until fork exists). */
   const activePresenceSessionId =
     target?.kind === "session"
       ? target.sessionId
       : target?.kind === "new-fork"
         ? target.parentSessionId
         : null;
->>>>>>> main
 
   // History captured at the moment Branch Off is clicked, so the
   // overlay can render the parent's messages while the fork API is

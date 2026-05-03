@@ -11,7 +11,7 @@ const ProjectPeersContext = createContext<PresenceState[] | undefined>(
 );
 
 /**
- * One canonical `project:{id}` realtime presence subscription per room layout.
+ * One canonical `project-presence:{id}` realtime presence subscription per room layout.
  * Consumers read `focusedSessionId` on each peer to know which branch they popped
  * open (see AGENTS session protocol). Keeps ForestCanvas off a second `.channel()`
  * reuse path that silently breaks Presence.

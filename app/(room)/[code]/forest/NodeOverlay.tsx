@@ -32,8 +32,6 @@ import type { PresenceState } from "@/lib/realtime/channels";
 import { cn } from "@/lib/utils";
 import type { MessageRow, SessionRow } from "@/types/db";
 
-<<<<<<< HEAD
-=======
 import {
   type MessageAuthorSnippet,
   useSessionMessages,
@@ -74,7 +72,6 @@ function resolveSenderChip(
   };
 }
 
->>>>>>> main
 /**
  * The "popped-up" view of one chat session. Three modes (driven by the
  * parent's `target` prop):
@@ -134,29 +131,14 @@ export function NodeOverlay(props: OverlayProps) {
   } = props;
 
   const sessionId = session?.id ?? null;
-<<<<<<< HEAD
   const messages = prefetchedMessages ?? [];
-=======
 
-  // Live messages still come from this component (no channel-dedup
-  // risk: the messages hook uses a `session-messages:<id>` topic that
-  // no other hook subscribes to).
-  const {
-    messages: liveMessages,
-    loading: messagesLoading,
-    authorsByUserId,
-    ensureAuthorsKnown,
-  } = useSessionMessages(sessionId, prefetchedMessages ?? null);
-
-  const messages = useMemo(() => {
-    // Prefer live data once it arrives. Until then show whatever
-    // history the parent passed in (e.g. for a freshly-forked session).
-    if (sessionId && (liveMessages.length > 0 || !messagesLoading)) {
-      return liveMessages;
-    }
-    return prefetchedMessages ?? [];
-  }, [sessionId, liveMessages, messagesLoading, prefetchedMessages]);
->>>>>>> main
+  // Hydrates sender labels for prefetched fork history and lock chips without
+  // mounting another session realtime channel beside ChatSession.
+  const { authorsByUserId, ensureAuthorsKnown } = useSessionMessages(
+    null,
+    prefetchedMessages ?? null
+  );
 
   // Identity / presence filtering --------------------------------------
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -351,15 +333,19 @@ export function NodeOverlay(props: OverlayProps) {
                 <EmptyHint text="Branching... first send will create the fork." />
               ) : null}
 
-<<<<<<< HEAD
               {messages.map((m) => (
                 <ChatBubble
                   key={m.id}
                   role={m.role === "assistant" ? "assistant" : "user"}
                   content={m.content}
-                  author={
-                    m.author_id
-                      ? presence.find((p) => p.clientId === m.author_id) ?? null
+                  senderChip={
+                    m.role === "user" && m.author_id
+                      ? resolveSenderChip(
+                          m.author_id,
+                          authorsByUserId,
+                          presence,
+                          identity
+                        )
                       : null
                   }
                 />
@@ -377,31 +363,6 @@ export function NodeOverlay(props: OverlayProps) {
           ) : (
             <EmptyHint text="Reload the room to restore your local identity." />
           )}
-=======
-          {messages.map((m) => (
-            <ChatBubble
-              key={m.id}
-              role={m.role === "assistant" ? "assistant" : "user"}
-              content={m.content}
-              senderChip={
-                m.role === "user" && m.author_id
-                  ? resolveSenderChip(
-                      m.author_id,
-                      authorsByUserId,
-                      presence,
-                      identity
-                    )
-                  : null
-              }
-            />
-          ))}
-
-          {messagesLoading && messages.length === 0 && !isPending ? (
-            <p className="text-center text-xs text-muted-foreground">
-              Loading messages…
-            </p>
-          ) : null}
->>>>>>> main
         </div>
 
         {isPending && lockedByOther ? (

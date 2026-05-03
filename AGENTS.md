@@ -109,10 +109,14 @@ Display-name collisions are resolved in the UI by appending the first 4 chars of
 
 ## Realtime model
 
-Two channels per project:
+Realtime topics:
 
 - `project:{projectId}` — broadcast: master context edits, new sessions created, new highlights, session metadata bumps.
-- `session:{sessionId}` — broadcast: new messages, assistant streaming chunks; presence: who is currently viewing.
+- `session:{sessionId}` — broadcast: new messages and assistant streaming chunks; Postgres message changes.
+- `project-presence:{projectId}` — room-level presence and each peer's focused session.
+- `presence:{sessionId}` — forest overlay/card presence for one chat session.
+
+Presence must stay on dedicated presence topics. Supabase reuses channels by topic, and adding `presence` or `postgres_changes` callbacks after a channel has subscribed throws.
 
 **Chat is append-only.** Multiple users typing simultaneously is fine — each one has their own input box, each `send` writes its own `messages` row. There is no shared draft, no co-edited input, no CRDT anywhere in the system.
 

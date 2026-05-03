@@ -9,7 +9,10 @@ import {
 } from "react";
 
 import { loadIdentity, type Identity } from "@/lib/identity";
-import { projectChannel, type PresenceState } from "@/lib/realtime/channels";
+import {
+  projectPresenceChannel,
+  type PresenceState,
+} from "@/lib/realtime/channels";
 import { peersFromRealtimePresence } from "@/lib/realtime/presence-peers";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 
@@ -36,7 +39,7 @@ async function safeUntrack(channel: RealtimeChannel) {
 }
 
 /**
- * Subscribe to a project's Realtime channel and surface live presence.
+ * Subscribe to a project's dedicated presence channel and surface live peers.
  *
  * Reliability:
  * - Subscribes only after browser mount so `localStorage` identity matches RoomGuard.
@@ -51,6 +54,7 @@ export function useProjectPresence(
 
   /** Post-hydration — first client tick where `localStorage` is trustworthy. */
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
 
@@ -75,7 +79,7 @@ export function useProjectPresence(
         ? `anon-session:${crypto.randomUUID()}`
         : "anon-unknown";
 
-    const channel = supabase.channel(projectChannel(projectId), {
+    const channel = supabase.channel(projectPresenceChannel(projectId), {
       config: {
         presence: {
           key: viewerClientId ?? presenceFallbackKey,

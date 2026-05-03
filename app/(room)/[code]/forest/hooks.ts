@@ -11,7 +11,7 @@ import {
 } from "react";
 
 import { loadIdentity } from "@/lib/identity";
-import { sessionChannel, type PresenceState } from "@/lib/realtime/channels";
+import { presenceChannel, type PresenceState } from "@/lib/realtime/channels";
 import { peersFromRealtimePresence } from "@/lib/realtime/presence-peers";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import type {
@@ -323,9 +323,9 @@ export function useSessionMessages(
 }
 
 /**
- * Per-session `session:{id}` realtime presence — the source of truth for “who has
- * this chat popped open”. One forest hook owns every session channel so we never
- * double-subscribe after `subscribe()` (see duplicate-channel footgun in hooks header).
+ * Per-session `presence:{id}` realtime presence - the source of truth for who has
+ * this chat popped open. Keep this separate from `session:{id}`, which useChatSession
+ * owns for broadcasts and postgres_changes.
  *
  * Tracks only **one** topic at a time (the popped overlay session, or parent while
  * a fork is pending). Every other subscribed topic stays `untracked`, but listeners
@@ -340,6 +340,7 @@ export function useForestPresence({
 }): Record<string, PresenceState[]> {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
 
@@ -361,6 +362,7 @@ export function useForestPresence({
 
   useEffect(() => {
     if (!mounted || !viewerClientId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setById({});
       return undefined;
     }
@@ -383,16 +385,8 @@ export function useForestPresence({
     setById(seeded);
 
     for (const id of sessionIds) {
-<<<<<<< HEAD
       if (have.has(id)) continue;
-      // Use a dedicated topic so this channel never collides with the
-      // session broadcast+postgres_changes channel in useChatSession.
-      // supabase.channel() reuses an existing channel by topic; calling
-      // .on("postgres_changes") on an already-subscribed channel throws.
-      const ch = supabase.channel(`presence:${id}`, {
-=======
-      const ch = supabase.channel(sessionChannel(id), {
->>>>>>> main
+      const ch = supabase.channel(presenceChannel(id), {
         config: {
           presence: {
             key: viewerClientId,
@@ -585,6 +579,7 @@ export function useSessionOccupancyPolling({
   // Pull recently-active participants for all visible session ids.
   useEffect(() => {
     if (sessionIds.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setById({});
       return;
     }
