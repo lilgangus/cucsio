@@ -58,15 +58,15 @@ export function AgentHighlightsPanel() {
               <Trash2Icon className="size-3.5" />
             </Button>
 
-            <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-violet-700 dark:text-violet-200">
-              <SparklesIcon className="size-3" />
-              agent finding
-            </span>
-            <p className="mt-1 line-clamp-3 text-sm font-medium text-foreground">
-              {h.label}
-            </p>
-            <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
-              {h.reason}
+            <SparklesIcon
+              className="mb-1 size-3.5 text-violet-700 dark:text-violet-200"
+              aria-label="Agent insight"
+            />
+            <p
+              className="truncate text-sm font-semibold leading-snug text-foreground"
+              title={h.summary}
+            >
+              {h.summary}
             </p>
           </div>
         </li>

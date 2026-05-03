@@ -224,17 +224,7 @@ function AgentNodeCard({
             className="pointer-events-none absolute inset-0 rounded-xl bg-amber-300/20 motion-safe:animate-pulse dark:bg-amber-400/20"
           />
         ) : null}
-        <div className="flex items-center justify-between gap-1.5">
-          <span
-            className={cn(
-              "truncate text-[10px] font-semibold uppercase tracking-wide",
-              node.depth === 0
-                ? "text-violet-700 dark:text-violet-200"
-                : "text-muted-foreground"
-            )}
-          >
-            {node.depth === 0 ? "Plan" : node.depth === 1 ? "Probe" : "Leaf"}
-          </span>
+        <div className="flex items-center justify-end">
           <StatusChip status={node.status} />
         </div>
         <p

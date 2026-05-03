@@ -1,7 +1,12 @@
 "use client";
 
 import { BrainCircuitIcon, PinIcon, SearchIcon, XIcon } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type PointerEvent,
+} from "react";
 
 import { AgenticTimeline } from "@/components/chat/AgenticTimeline";
 import { ApiError, searchProject } from "@/lib/api";
@@ -29,11 +34,16 @@ type Props = {
   projectId: string;
 };
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 export function RightPanel({ projectId }: Props) {
   const [queryDraft, setQueryDraft] = useState("");
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [teamPct, setTeamPct] = useState(56);
   const {
     state: agentState,
     apply: applyAgentEvent,
@@ -43,6 +53,7 @@ export function RightPanel({ projectId }: Props) {
   const { openSessionChat } = useSessionFocus();
   const { trigger: triggerAgent } = useAgentActivity();
   const abortRef = useRef<AbortController | null>(null);
+  const panesRef = useRef<HTMLDivElement | null>(null);
 
   const submit = useCallback(async () => {
     const trimmed = queryDraft.trim();
@@ -98,6 +109,29 @@ export function RightPanel({ projectId }: Props) {
     resetAgentTimeline();
   };
 
+  const dragFindingsSplit = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const root = panesRef.current;
+    if (!root) return;
+    event.preventDefault();
+    const rect = root.getBoundingClientRect();
+
+    const onMove = (e: globalThis.PointerEvent) => {
+      const pct = ((e.clientY - rect.top) / rect.height) * 100;
+      setTeamPct(clamp(pct, 30, 78));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }, []);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-border p-3">
@@ -122,10 +156,16 @@ export function RightPanel({ projectId }: Props) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={panesRef}
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
+      >
         {/* Top half: search results when active, otherwise the team's
             pinned highlights board. */}
-        <div className="relative">
+        <div
+          className="relative min-h-[130px] overflow-y-auto"
+          style={{ flexBasis: `${teamPct}%` }}
+        >
           <div className="flex items-center gap-1.5 border-b border-border/60 bg-muted/30 px-3 py-1.5">
             <PinIcon className="size-3 text-muted-foreground" />
             <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
@@ -174,9 +214,15 @@ export function RightPanel({ projectId }: Props) {
         </div>
 
         {/* Hard divider — mirrors the user/agent split on the left. */}
-        <div className="relative my-1">
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize agent findings"
+          onPointerDown={dragFindingsSplit}
+          className="group relative z-20 flex h-4 shrink-0 cursor-row-resize touch-none items-center"
+        >
           <div className="h-[2px] w-full bg-gradient-to-r from-violet-500/20 via-violet-500/70 to-fuchsia-500/20" />
-          <div className="absolute -top-2 left-1/2 -translate-x-1/2 select-none">
+          <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 select-none">
             <span className="inline-flex items-center gap-1 rounded-full border border-violet-400/60 bg-card px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.22em] text-violet-700 shadow-sm dark:border-violet-300/40 dark:text-violet-200">
               <BrainCircuitIcon className="size-2.5" />
               agent
@@ -185,7 +231,10 @@ export function RightPanel({ projectId }: Props) {
         </div>
 
         {/* Bottom half: the agent's autonomous highlight feed. */}
-        <div className="relative">
+        <div
+          className="relative min-h-[130px] flex-1 overflow-y-auto"
+          style={{ flexBasis: `${100 - teamPct}%` }}
+        >
           <div className="flex items-center gap-1.5 border-b border-border/60 bg-violet-500/5 px-3 py-1.5">
             <BrainCircuitIcon className="size-3 text-violet-600 dark:text-violet-300" />
             <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-700 dark:text-violet-200">
