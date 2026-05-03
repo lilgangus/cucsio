@@ -19,8 +19,9 @@ import {
 import { toast } from "sonner";
 
 import { UpstreamKeyDetails } from "@/components/chat/UpstreamKeyDetails";
-import { AssistantStreamBubble } from "@/components/chat/AssistantStreamBubble";
+import { AgenticTimeline } from "@/components/chat/AgenticTimeline";
 import { ChatBubble, type ChatBubbleSenderChip } from "@/components/chat/ChatBubble";
+import { PersistedAgentTrace } from "@/components/chat/PersistedAgentTrace";
 import { SelectableMessage } from "@/components/highlight/SelectableMessage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,7 +33,9 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, sendMessage } from "@/lib/api";
 import { loadIdentity, type Identity } from "@/lib/identity";
+import { useAgentTimeline, safeParseTrace } from "@/lib/llm/agent-timeline-state";
 import type { PresenceState } from "@/lib/realtime/channels";
+import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import { cn } from "@/lib/utils";
 import type { MessageRow, SessionRow } from "@/types/db";
@@ -100,7 +103,8 @@ function resolveSenderChip(
 
 /** Passed into `onSendNew` so first-send can wire the same streaming UX as normal sends. */
 export type AssistantStreamCallbacks = {
-  onAssistantDelta: (accumulated: string) => void;
+  /** Forward every agent event to the overlay's local timeline state. */
+  onAgentEvent: (event: import("@/lib/llm/agent-events").AgentEvent) => void;
   /** Cancel LLM stream when leaving the overlay — server clears `pending_user_id`. */
   signal?: AbortSignal;
 };
@@ -235,13 +239,18 @@ export function NodeOverlay(props: OverlayProps) {
   const sessionTargetFocusedRef = useRef(false);
   const sessionTargetLastWrittenRef = useRef("");
   const [sending, setSending] = useState(false);
-  /** `null` = idle; `""` = assistant streaming but no tokens yet; otherwise accumulated text. */
-  const [streamingAssistant, setStreamingAssistant] = useState<string | null>(
-    null
-  );
+  /** Live agent timeline (Differential brainstorming → Evidence retrieval → Synthesis). */
+  const {
+    state: agentState,
+    apply: applyAgentEvent,
+    reset: resetAgentTimeline,
+    start: startAgentTimeline,
+  } = useAgentTimeline();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** Abort ongoing `/messages` fetch when the user closes the overlay or it unmounts. */
   const sendAbortRef = useRef<AbortController | null>(null);
+
+  const { openSessionChat } = useSessionFocus();
 
   useEffect(() => {
     return () => sendAbortRef.current?.abort();
@@ -297,13 +306,20 @@ export function NodeOverlay(props: OverlayProps) {
     onClose();
   }, [onClose]);
 
-  /** Hide live stream bubble once the persisted assistant row (Realtime) matches streamed text. */
-  const showAssistantStream = useMemo(() => {
-    if (streamingAssistant === null) return false;
-    const last = messages[messages.length - 1];
-    if (!last || last.role !== "assistant") return true;
-    return last.content.trim() !== streamingAssistant.trim();
-  }, [messages, streamingAssistant]);
+  /**
+   * Keep the timeline visible until the matching assistant row actually has a
+   * persisted `agent_trace` from Postgres — otherwise Realtime drops the UI to
+   * a collapsed disclosure with nothing inside yet (looks like steps vanished).
+   */
+  const showAgentTimeline = useMemo(() => {
+    if (agentState.phases.length === 0 && !agentState.running) return false;
+    const doneId = agentState.finalAssistantMessageId;
+    if (doneId && !agentState.running) {
+      const row = messages.find((m) => m.id === doneId);
+      if (row && safeParseTrace(row.agent_trace)) return false;
+    }
+    return true;
+  }, [agentState, messages]);
 
   const submit = useCallback(async () => {
     const text = draft.trim();
@@ -314,14 +330,15 @@ export function NodeOverlay(props: OverlayProps) {
     const ac = new AbortController();
     sendAbortRef.current = ac;
     setSending(true);
-    setStreamingAssistant("");
+    resetAgentTimeline();
+    startAgentTimeline();
     try {
       if (isPending && onSendNew) {
         const created = await onSendNew(
           text,
           pendingTarget.trim() || undefined,
           {
-            onAssistantDelta: (acc) => setStreamingAssistant(acc),
+            onAgentEvent: applyAgentEvent,
             signal: ac.signal,
           }
         );
@@ -330,13 +347,13 @@ export function NodeOverlay(props: OverlayProps) {
         // session id; nothing else for us to do here.
       } else if (sessionId) {
         await sendMessage(sessionId, { content: text }, {
-          onAssistantDelta: (acc) => setStreamingAssistant(acc),
+          onAgentEvent: applyAgentEvent,
           signal: ac.signal,
         });
       }
       setDraft("");
     } catch (err) {
-      setStreamingAssistant(null); // stop bubble on error
+      resetAgentTimeline();
       if (isSendAbortError(err)) return;
       const msg =
         err instanceof ApiError
@@ -357,6 +374,9 @@ export function NodeOverlay(props: OverlayProps) {
     onSendNew,
     pendingTarget,
     sessionId,
+    applyAgentEvent,
+    resetAgentTimeline,
+    startAgentTimeline,
   ]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -373,11 +393,19 @@ export function NodeOverlay(props: OverlayProps) {
 
   // Keep the message list scrolled to the bottom on new messages.
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const synthesisLen = agentState.byId.synthesis?.text.length ?? 0;
+  const differentialLen = agentState.byId.differential?.text.length ?? 0;
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages.length, streamingAssistant, showAssistantStream]);
+  }, [
+    messages.length,
+    showAgentTimeline,
+    agentState.phases.length,
+    synthesisLen,
+    differentialLen,
+  ]);
 
   useEffect(() => {
     if (!scrollToMessageId || !sessionId) return;
@@ -551,6 +579,14 @@ export function NodeOverlay(props: OverlayProps) {
               }
               />
             );
+            const trace =
+              m.role === "assistant" ? (
+                <PersistedAgentTrace
+                  trace={m.agent_trace}
+                  assistantReply={m.content}
+                  onOpenSession={(sid) => openSessionChat(sid)}
+                />
+              ) : null;
             return sessionId ? (
               <SelectableMessage
                 key={m.id}
@@ -558,14 +594,21 @@ export function NodeOverlay(props: OverlayProps) {
                 messageId={m.id}
               >
                 {bubble}
+                {trace}
               </SelectableMessage>
             ) : (
-              <div key={m.id}>{bubble}</div>
+              <div key={m.id}>
+                {bubble}
+                {trace}
+              </div>
             );
           })}
 
-          {showAssistantStream ? (
-            <AssistantStreamBubble text={streamingAssistant!} />
+          {showAgentTimeline ? (
+            <AgenticTimeline
+              state={agentState}
+              onOpenSession={(sid) => openSessionChat(sid)}
+            />
           ) : null}
 
           {messagesLoading && messages.length === 0 && !isPending ? (

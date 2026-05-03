@@ -177,7 +177,9 @@ export function ForestCanvas({ projectId }: Props) {
       content: string,
       sessionTarget: string | undefined,
       stream: {
-        onAssistantDelta: (accumulated: string) => void;
+        onAgentEvent: (
+          event: import("@/lib/llm/agent-events").AgentEvent
+        ) => void;
         signal?: AbortSignal;
       }
     ): Promise<{ sessionId: string } | null> => {
@@ -189,7 +191,7 @@ export function ForestCanvas({ projectId }: Props) {
             sessionTarget,
           });
           await sendMessage(session.id, { content }, {
-            onAssistantDelta: stream.onAssistantDelta,
+            onAgentEvent: stream.onAgentEvent,
             signal: stream.signal,
           });
           setSessionBootstrap(session);
@@ -201,7 +203,7 @@ export function ForestCanvas({ projectId }: Props) {
             sessionTarget,
           });
           await sendMessage(session.id, { content }, {
-            onAssistantDelta: stream.onAssistantDelta,
+            onAgentEvent: stream.onAgentEvent,
             signal: stream.signal,
           });
           setSessionBootstrap(session);
@@ -214,7 +216,7 @@ export function ForestCanvas({ projectId }: Props) {
             sessionTarget,
           });
           await sendMessage(session.id, { content }, {
-            onAssistantDelta: stream.onAssistantDelta,
+            onAgentEvent: stream.onAgentEvent,
             signal: stream.signal,
           });
           setSessionBootstrap(session);

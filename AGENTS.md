@@ -39,7 +39,9 @@ The visual hook: behind the active chat is a **fork tree** showing every session
 - **Tailwind** + **shadcn/ui**
 - **Supabase** — Postgres + Realtime + anon JS client
 - **Vercel AI SDK** (`ai`, `@ai-sdk/openai`) for streaming + `useChat`
-- **OpenAI `gpt-4o-mini`** for chat, summaries, search
+- **NVIDIA Nemotron via OpenRouter** (default `nvidia/nemotron-nano-9b-v2:free`,
+  override with `OPENROUTER_CHAT_MODEL`) for chat, summaries, search, and the
+  agent timeline
 - **React Flow** + **dagre** for the fork tree
 - **Vercel** for deploy
 
@@ -52,18 +54,24 @@ app/
   page.tsx               # landing: create or join by code
   (room)/[code]/         # main collab UI for a project
     layout.tsx           # top bar + 2/3 left + 1/3 right shell
-    chat/                # message list, per-user input, streaming
-    tree/                # React Flow fork tree background
+    chat/                # fallback sidebar chat (used with ?tree=off)
+    forest/              # main fork-tree canvas + chat overlay
+    right/               # search-on-top, highlights-below right panel
     highlights/          # backboard panel
-    search/              # stateless search panel
+    search/              # legacy stateless search panel (kept for ?tree=off)
   api/
     users/upsert/        # POST { clientId, displayName, color }
     summarize/           # POST { sessionId } → updates sessions.summary
-    search/              # POST { projectId, query } → cited answer
+    search/              # POST { projectId, query } → streams AgentEvents
+    sessions/[id]/messages # POST → streams AgentEvents (chat agent timeline)
 components/              # shared UI
+  chat/AgenticTimeline   # visible "clinical team" agent run (chat + search)
 lib/
   supabase/              # browser + server clients
-  llm/                   # OpenAI wrappers, prompt builders
+  llm/                   # OpenRouter wrapper, prompt builders, agent pipeline
+    agent-events.ts      # NDJSON wire protocol shared by chat + search
+    agent-pipeline.ts    # server-side orchestrator (differential → evidence → synthesis)
+    agent-timeline-state.ts # client-side reducer that drives the timeline UI
   realtime/              # channel helpers, presence helpers
   tree/                  # dagre layout helpers
   identity.ts            # clientId + displayName from localStorage
@@ -77,7 +85,9 @@ types/                   # shared TS types mirroring DB
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=     # server-only, used in route handlers
-OPENAI_API_KEY=
+OPENROUTER_API_KEY=            # required for chat, summaries, search, agent timeline
+OPENROUTER_CHAT_MODEL=         # optional; defaults to nvidia/nemotron-nano-9b-v2:free
+OPENAI_API_KEY=                # legacy; only used by /api/summarize fallback paths
 ```
 
 Never commit `.env.local`. RLS is **disabled** for the hackathon — the anon key is effectively god-mode and we accept that.
@@ -126,36 +136,130 @@ sequenceDiagram
     participant Edge as Server action
     participant DB as Postgres
     participant RT as Realtime
-    participant LLM as OpenAI
+    participant LLM as Nemotron via OpenRouter
 
     Client->>Edge: send(content, sessionId)
-    Edge->>DB: insert messages(role=user, ...)
-    Edge-->>RT: broadcast { user_msg, row }
-    Note over Edge: debounce 500ms after last user msg<br/>so bursts collapse into one turn
-    Edge->>LLM: stream(history + master_context + ancestor summaries)
-    loop chunk
-        LLM-->>Edge: token
-        Edge-->>RT: broadcast { assistant_chunk, tmpId, delta }
-    end
-    Edge->>DB: insert messages(role=assistant, full content, tokens)
-    Edge-->>RT: broadcast { assistant_done, row }
+    Edge->>DB: lock session + insert messages(role=user, ...)
+    Edge-->>Client: stream AgentEvents (NDJSON)
+    Note over Edge: agent pipeline — see "Agent timeline" section
+    Edge->>LLM: Phase 1: differential brainstorm (streamed)
+    Edge->>DB: Phase 2: real DB reads dressed as named tools
+    Edge->>LLM: Phase 3: attending-style synthesis (streamed)
+    Edge->>DB: insert messages(role=assistant, synthesis text, tokens)
+    Edge-->>Client: AgentEvent { type: "done", assistantMessageId }
+    Edge->>DB: release session lock
 ```
 
-While a stream is in flight, lock everyone's input on that session. Unlock on `assistant_done`.
+While a stream is in flight, lock everyone's input on that session. Unlock when the agent emits `done` (also unlocked on client abort).
+
+## Agent timeline (the "clinical team" synthesis path)
+
+Every model-driven response in the app — chat replies and project-wide
+search — runs through one agent pipeline that streams a visible timeline
+to the client. This is the project's NVIDIA Nemotron showcase: the model
+plans its own work, calls named tools, and only then produces the final
+answer. The user sees each step happen.
+
+The pipeline is **always three phases** rendered with clinical-team labels:
+
+| Phase ID | Label | What it does |
+| --- | --- | --- |
+| `differential` | **Differential brainstorming** | One Nemotron call. Short scratchpad: 2–4 plausible interpretations, the largest open uncertainty, and a one-line `Plan:` describing what to fetch. Streamed to the UI; never persisted. |
+| `evidence` | **Evidence retrieval** | Real Supabase reads dressed as named "tools" (`fetch_session_digests`, `read_recent_messages`, `pull_pinned_highlights`). Each tool emits a `tool_call` followed by a `tool_result` with a one-line log (`"Read session [[id]]: last 15 messages"`). |
+| `synthesis` | **Attending-style synthesis** | Second Nemotron call. System prompt = the original chat system prompt + the brainstorm scratchpad + the evidence pack. Streamed tokens become the persisted assistant message. Cites sessions with `[[<session_id>]]`. |
+
+Even though the tools are real DB reads, we present them as a workup so
+that the experience feels like a multi-step agent rather than a single
+prompt. Repetition is fine — the same evidence pack is gathered each
+turn. Simplicity beats cleverness here; the visual story is the value.
+
+### Wire format
+
+`lib/llm/agent-events.ts` owns the type. Both endpoints stream NDJSON
+(one `AgentEvent` per line) over a `text/plain` body so existing fetch
+infra and proxies just work.
+
+```ts
+type AgentEvent =
+  | { type: "phase";        phase: AgentPhaseId; label: string }
+  | { type: "phase_status"; phase: AgentPhaseId; status: "done" }
+  | { type: "delta";        phase: AgentPhaseId; text: string }
+  | { type: "tool_call";    name: string; label: string; args?: string }
+  | { type: "tool_result";  name: string; log: string; sessionIds?: string[] }
+  | { type: "error";        message: string }
+  | { type: "done";         assistantMessageId: string | null };
+```
+
+`AgentPhaseId` is `"differential" | "evidence" | "synthesis"`. Clients
+parse the stream with `takeCompleteLines` from the same module.
+
+### Persistence
+
+The chat agent run is **not** ephemeral. As the route emits each
+`AgentEvent` it also tees the event into an in-memory log; when the
+synthesis lands, the route folds the log through the same reducer the
+client uses, serializes the resulting state, and writes it into
+`messages.agent_trace` (jsonb) alongside the assistant row. After a
+refresh, every saved assistant message renders with a collapsed
+"▾ Show reasoning trace" disclosure that re-hydrates the timeline.
+
+Search traces are intentionally **not** persisted — search is stateless,
+the only output is the streamed answer, and there's no row to attach a
+trace to.
+
+The reducer + serialize/deserialize/safeParse helpers live in pure
+`lib/llm/agent-trace.ts` (no React) so the route can use them. The
+client hook `useAgentTimeline()` in `lib/llm/agent-timeline-state.ts`
+just wraps the reducer in `useReducer`.
+
+### Visible UI
+
+`<AgenticTimeline state={...} />` (in `components/chat/`) renders the
+timeline. It's used in three places — keep them in sync:
+
+1. `app/(room)/[code]/forest/NodeOverlay.tsx` — chat overlay over the
+   fork tree (the main surface).
+2. `app/(room)/[code]/chat/ChatPanel.tsx` — sidebar fallback when
+   `?tree=off` is set.
+3. `app/(room)/[code]/right/RightPanel.tsx` — search results card on
+   the right side of the room.
+
+For **saved** assistant messages, render
+`<PersistedAgentTrace trace={message.agent_trace} />` directly under the
+bubble — it's a self-contained collapsible disclosure that no-ops when
+the column is null.
+
+The hook that wires events into renderable state is
+`useAgentTimeline()` from `lib/llm/agent-timeline-state.ts`. Pass its
+`apply` callback as the `onAgentEvent` option on `sendMessage()` /
+`searchProject()`.
+
+### When extending
+
+- Adding a new "tool" only requires emitting `tool_call` + `tool_result`
+  inside `runEvidenceRetrieval` — the UI renders any number of steps.
+- Adding a fourth phase requires adding a new `AgentPhaseId` value and a
+  matching label/icon/tint in `<AgenticTimeline />`. Don't introduce
+  ad-hoc protocol fields; if the timeline can't show it, don't emit it.
+- Don't switch protocols (SSE, WebSockets, gRPC, etc.). NDJSON over
+  `fetch` keeps the surface area trivial.
 
 ## LLM prompt rules
 
-- **Chat turn input** = `[system: master_context]` + `[system: ancestor-chain summaries]` + `[last 30 messages of the current session]`.
-  - **Only the parent chain.** Walk `parent_session_id` upward from the current session to the root and inject those `sessions.summary` rows. **Sibling, cousin, and otherwise-unrelated sessions are not injected** — they're invisible to the chat turn. (Search, below, is the path that sees every session.)
-  - **Cap at the 5 closest ancestors.** If the chain is deeper than 5, keep the 5 nearest (closest to current) and drop the oldest roots.
-  - **Order: root-most first**, then walk down to the immediate parent, then current-session messages. The model reads the context like a story leading into the live conversation.
-  - No tiktoken counter — `gpt-4o-mini`'s 128k window has huge headroom under `master_context` (≤ ~2k tokens) + 5 × 200-token ancestor summaries + 30 recent messages.
-- **Burst coalescing**: server waits 500ms after the last user-message insert in a session before issuing a single assistant turn that sees all of them.
+The chat path is **agentic** (see "Agent timeline" above). The numbers
+below describe the inputs to the **synthesis** phase — the only phase
+whose output gets persisted into `messages`. The differential phase
+sees the same recent-message history but with a different system prompt
+that tells it to brainstorm rather than answer.
+
+- **Chat synthesis input** = `[system: master_context]` + `[system: smart_context]` + `[system: brainstorm scratchpad]` + `[system: evidence pack]` + `[last 30 messages of the current session]`.
+  - **`smart_context`** is the per-branch ancestor distillation populated when the session is forked / combined (see `lib/llm/smart-context.ts`). It supersedes the older "walk parent_session_id and stuff summaries" rule.
+  - **Evidence pack** is gathered live each turn by the agent pipeline (sibling session digests, recent transcripts from a few priority sessions, pinned highlights). This is what gives the assistant cross-session awareness without putting the entire workspace in every prompt.
+  - **No tiktoken counter** — Nemotron's window has huge headroom under master_context (≤ ~2k tokens) + smart_context (≤ ~6k chars) + a small evidence pack + 30 recent messages.
+- **Burst coalescing** is *not* implemented today (the lock serializes turns instead — only one user can have an in-flight reply per session). Acceptable for the MVP.
 - **Summary regeneration** = on fork, and whenever a session's `message_count` crosses a multiple of 10. Server action loads all messages, asks the model to summarize in ≤ 200 tokens, writes to `sessions.summary`.
-- **Search** = single stateless call. **System prompt contains every session's `id`, `label`, `session_target`, and `summary` for the project** — this is the *only* place we go cross-tree. User message is the query.
-  - First pass (planner): select a small set of likely-relevant session IDs.
-  - Second pass (answerer): inject deeper context from those sessions and answer with citations.
-  - Instruct the model to cite session IDs in `[[<id>]]` form. The UI parses citations and links them to the tree.
+- **Search** uses the same agent pipeline as chat — `runSearchPipeline` in `lib/llm/agent-pipeline.ts`. Phase 1 brainstorms over the query, phase 2 pulls evidence (sibling digests + recent transcripts + highlights), phase 3 synthesizes the final cited answer. **Search is the only place that goes truly cross-tree by default**, but chat now also touches sibling sessions via the evidence phase.
+- **Cite session IDs in `[[<id>]]` form.** The timeline component renders these as clickable chips that open the cited session.
 - **Auto-highlights (stretch only)** = ask the model to optionally emit `proposeHighlight({ message_id, snippet, reason })`. Insert with `source='ai'`.
 
 ## Data model (source of truth — keep `db/migrations/` in sync)
@@ -222,7 +326,13 @@ create table messages (
   completion_tokens int,
   created_at timestamptz not null default now(),
   edited_at timestamptz,
-  is_deleted boolean not null default false
+  is_deleted boolean not null default false,
+  -- migration 0007_message_agent_trace.sql:
+  -- snapshot of the visible "clinical team" run (Differential brainstorming →
+  -- Evidence retrieval → Attending synthesis) that produced this message.
+  -- Shape mirrors `PersistedAgentTrace` from `lib/llm/agent-trace.ts`.
+  -- Rendered as a "▾ Show reasoning trace" disclosure under the bubble.
+  agent_trace jsonb
 );
 create index on messages (session_id, created_at);
 
@@ -271,11 +381,13 @@ create index on highlights (session_id, created_at);
 ## Don't-forget list
 
 - Always pass the `clientId` header on writes; otherwise `created_by` will be NULL and the UI looks broken.
-- Lock all chat inputs in a session while an assistant stream is in flight. Unlock on `assistant_done`.
+- Lock all chat inputs in a session while an assistant stream is in flight. Unlock when the agent emits `done` (or on client abort — `req.signal` is wired into the route).
 - Re-summarize a session on fork and every 10 new messages — search quality depends on it.
 - Require a non-empty `sessions.session_target` whenever creating a session (root or forked). Search quality depends on this.
 - Ship a fallback "session list sidebar" behind a `?tree=off` URL flag in case React Flow misbehaves late in the build. Build the flag in hour 1.
 - Bump `sessions.last_activity_at` and increment `sessions.message_count` on every message insert (do it in the same server action as the insert).
+- The chat + search routes both stream NDJSON `AgentEvent`s. If you change the protocol, update **all four** consumers in lockstep: `lib/llm/agent-events.ts`, the two API routes, and the reducer in `lib/llm/agent-trace.ts` (the React hook just wraps it).
+- When you change the persisted shape (`PersistedAgentTrace`), bump `version` and teach `safeParseTrace` to either migrate or reject older rows. Saved traces don't get backfilled.
 
 ## For AI coding agents
 
@@ -285,4 +397,6 @@ create index on highlights (session_id, created_at);
 - Do not "improve" the design beyond MVP. Out-of-scope features stay out.
 - Prefer the smallest implementation that satisfies the MVP feature description above.
 - When two designs are both valid, pick the one that ships in under 30 minutes.
+- The agent timeline is the project's NVIDIA Nemotron showcase. Don't quietly skip a phase or stop streaming `tool_call`/`tool_result` events to "save time" — the visible run is the deliverable. Even if the underlying tool is a one-line DB read, emit it so the user sees the agent doing its workup.
+- If you add new "tools" to evidence retrieval, name them like a clinical workflow (`fetch_session_digests`, `read_recent_messages`, `pull_pinned_highlights`, `cross_reference_highlights`, …). The "fake-named-but-real-underneath" framing is intentional.
 

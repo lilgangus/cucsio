@@ -1,6 +1,21 @@
 import { NextResponse } from "next/server";
-import { streamText } from "ai";
+import { streamText, type ModelMessage } from "ai";
 
+import {
+  AGENT_PHASE_LABELS,
+  encodeAgentEvent,
+  type AgentEvent,
+} from "@/lib/llm/agent-events";
+import {
+  buildSynthesisAugmentation,
+  makeEmitter,
+  runDifferentialBrainstorm,
+  runEvidenceRetrieval,
+} from "@/lib/llm/agent-pipeline";
+import {
+  buildTimelineFromEvents,
+  serializeTimeline,
+} from "@/lib/llm/agent-trace";
 import {
   buildChatSystemPrompt,
   messageRowsToModelMessages,
@@ -23,15 +38,19 @@ type Params = { params: Promise<{ id: string }> };
 /**
  * Send one message into a session.
  *
- * Lock protocol:
- *   1. Atomically claim the session (pending_user_id).
+ * Lock protocol unchanged from the prior implementation:
+ *   1. Atomically claim the session (`pending_user_id`).
  *   2. Insert the user's message.
- *   3. Stream the assistant via OpenRouter (`streamText`) — response body is
- *      `text/plain` chunks. Persist the full assistant row + bump counters in
- *      `onFinish`, then release the lock. `onError` also releases the lock.
+ *   3. Run the agent pipeline (differential brainstorm → evidence retrieval
+ *      → attending-style synthesis), streaming NDJSON `AgentEvent` lines.
+ *   4. Persist the synthesis text + bump counters in the synthesis call's
+ *      `onFinish`, then release the lock and emit `done`.
  *
- * If the client disconnects before the stream finishes, `onFinish` may never
- * run — always listen on `req.signal` so we clear `pending_user_id`.
+ * Stream body content-type is `text/plain` so existing fetch infra works,
+ * but the body is NDJSON; the client parses it via `lib/llm/agent-events`.
+ *
+ * If the client disconnects, `req.signal` aborts the writer + clears the
+ * lock so other users aren't stuck waiting for an unfinished turn.
  */
 export async function POST(req: Request, ctx: Params) {
   const clientId = getClientId(req);
@@ -118,11 +137,12 @@ export async function POST(req: Request, ctx: Params) {
       .eq("pending_user_id", clientId);
   };
 
-  const onClientGone = () => {
-    void releaseLock();
-  };
-  req.signal.addEventListener("abort", onClientGone);
-
+  // Insert the user message + figure out prompt context BEFORE we open
+  // the streaming response. If anything in here throws, we 500 cleanly.
+  let userMsg: MessageRow;
+  let chronological: MessageRow[];
+  let baseSystem: string;
+  let isFirstUserMessage = false;
   try {
     const { count: priorUserCount, error: countErr } = await supabase
       .from("messages")
@@ -133,7 +153,7 @@ export async function POST(req: Request, ctx: Params) {
     if (countErr) {
       console.error("[/api/sessions/messages] user-count", countErr);
     }
-    const isFirstUserMessage =
+    isFirstUserMessage =
       !countErr && typeof priorUserCount === "number" && priorUserCount === 0;
 
     const { data: insertedUser, error: insertUserErr } = await supabase
@@ -150,7 +170,7 @@ export async function POST(req: Request, ctx: Params) {
       console.error("[/api/sessions/messages] user insert", insertUserErr);
       throw new Error(insertUserErr?.message ?? "could not insert message");
     }
-    const userMsg = insertedUser as MessageRow;
+    userMsg = insertedUser as MessageRow;
 
     const { data: projectRow, error: projectErr } = await supabase
       .from("projects")
@@ -206,13 +226,11 @@ export async function POST(req: Request, ctx: Params) {
       console.error("[/api/sessions/messages] history fetch", histErr);
       throw new Error(histErr.message);
     }
-    const chronological = ((historyDesc ?? []) as MessageRow[])
+    chronological = ((historyDesc ?? []) as MessageRow[])
       .slice()
       .reverse();
 
-    const openrouter = getOpenRouter();
-    const chatModelId = getOpenRouterChatModelId();
-    const system = buildChatSystemPrompt({
+    baseSystem = buildChatSystemPrompt({
       masterContext:
         (projectRow as { master_context?: string } | null)?.master_context ??
         "",
@@ -220,73 +238,194 @@ export async function POST(req: Request, ctx: Params) {
       smartContext: smartContextForPrompt || undefined,
       isNewEmptySession: isFirstUserMessage,
     });
-
-    const result = streamText({
-      model: openrouter.chat(chatModelId),
-      system,
-      messages: messageRowsToModelMessages(chronological),
-      maxOutputTokens: 4096,
-      async onFinish({ text, usage }) {
-        try {
-          const replyText = (text ?? "").trim() || "(No response text.)";
-          let promptTokens: number | null = null;
-          let completionTokens: number | null = null;
-          if (usage) {
-            promptTokens =
-              typeof usage.inputTokens === "number" ? usage.inputTokens : null;
-            completionTokens =
-              typeof usage.outputTokens === "number"
-                ? usage.outputTokens
-                : null;
-          }
-          const { error: insertAsstErr } = await supabase.from("messages")
-            .insert({
-              session_id: sessionId,
-              role: "assistant",
-              author_id: null,
-              content: replyText,
-              model: chatModelId,
-              prompt_tokens: promptTokens,
-              completion_tokens: completionTokens,
-            });
-          if (insertAsstErr) {
-            console.error(
-              "[/api/sessions/messages] assistant insert",
-              insertAsstErr
-            );
-            throw new Error(insertAsstErr.message);
-          }
-
-          await supabase
-            .from("sessions")
-            .update({
-              message_count: session.message_count + 2,
-              last_activity_at: now(),
-              updated_at: now(),
-            })
-            .eq("id", sessionId);
-        } catch (e) {
-          console.error("[/api/sessions/messages] onFinish persist failed", e);
-        } finally {
-          await releaseLock();
-        }
-      },
-      onError: ({ error }) => {
-        console.error("[/api/sessions/messages] streamText", error);
-        void releaseLock();
-      },
-    });
-
-    return result.toTextStreamResponse({
-      headers: {
-        "X-User-Message-Id": userMsg.id,
-      },
-    });
   } catch (e) {
     await releaseLock();
     const message = e instanceof Error ? e.message : "send failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
+
+  // -- Stream the agent timeline as NDJSON ----------------------------
+  const stream = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = stream.writable.getWriter();
+  const writerEmit = makeEmitter(writer);
+  const encoder = new TextEncoder();
+  /** Event log so we can persist the trace alongside the assistant row. */
+  const recordedEvents: AgentEvent[] = [];
+  const emit = async (event: AgentEvent) => {
+    recordedEvents.push(event);
+    await writerEmit(event);
+  };
+
+  const onClientGone = () => {
+    void releaseLock();
+    void writer.close().catch(() => {});
+  };
+  req.signal.addEventListener("abort", onClientGone);
+
+  // Run the pipeline in the background so we can return the response now.
+  void (async () => {
+    let assistantMessageId: string | null = null;
+    try {
+      // Already-stored messages, minus the just-inserted user turn (we
+      // pass that explicitly to the brainstorm + synthesis calls).
+      const priorMessages = chronological.filter((m) => m.id !== userMsg.id);
+      const priorAsModel: ModelMessage[] =
+        messageRowsToModelMessages(priorMessages);
+
+      // ---- Phase 1: differential brainstorm --------------------------
+      const brainstorm = await runDifferentialBrainstorm({
+        emit,
+        baseSystem,
+        recentMessages: priorAsModel,
+        userTurn: content,
+      });
+
+      // ---- Phase 2: evidence retrieval ------------------------------
+      const evidence = await runEvidenceRetrieval({
+        emit,
+        supabase,
+        projectId: session.project_id,
+        excludeSessionId: sessionId,
+      });
+
+      // ---- Phase 3: attending-style synthesis -----------------------
+      await emit({
+        type: "phase",
+        phase: "synthesis",
+        label: AGENT_PHASE_LABELS.synthesis,
+      });
+
+      const { extraSystem } = buildSynthesisAugmentation({
+        brainstorm,
+        evidence,
+      });
+      const synthesisSystem = `${baseSystem}\n\n${extraSystem}`;
+
+      const openrouter = getOpenRouter();
+      const chatModelId = getOpenRouterChatModelId();
+
+      const result = streamText({
+        model: openrouter.chat(chatModelId),
+        system: synthesisSystem,
+        messages: messageRowsToModelMessages(chronological),
+        maxOutputTokens: 4096,
+      });
+
+      let assistantText = "";
+      for await (const chunk of result.textStream) {
+        if (!chunk) continue;
+        assistantText += chunk;
+        await emit({ type: "delta", phase: "synthesis", text: chunk });
+      }
+
+      const replyText = assistantText.trim() || "(No response text.)";
+      let promptTokens: number | null = null;
+      let completionTokens: number | null = null;
+      try {
+        const usage = await result.usage;
+        if (usage) {
+          promptTokens =
+            typeof usage.inputTokens === "number" ? usage.inputTokens : null;
+          completionTokens =
+            typeof usage.outputTokens === "number"
+              ? usage.outputTokens
+              : null;
+        }
+      } catch {
+        // Some providers don't return usage; fall through with nulls.
+      }
+
+      // Snapshot the timeline so a refresh / new viewer can replay
+      // the agent's reasoning under this message. We synthesize from the
+      // event log we collected as we streamed; the synthesis phase is
+      // not yet marked done at this point, so we close it manually
+      // before serializing.
+      const timelineForPersist = buildTimelineFromEvents([
+        ...recordedEvents,
+        { type: "phase_status", phase: "synthesis", status: "done" },
+      ]);
+      const agentTrace = serializeTimeline(timelineForPersist);
+
+      const { data: insertedAsst, error: insertAsstErr } = await supabase
+        .from("messages")
+        .insert({
+          session_id: sessionId,
+          role: "assistant",
+          author_id: null,
+          content: replyText,
+          model: chatModelId,
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          agent_trace: agentTrace,
+        })
+        .select()
+        .single();
+      if (insertAsstErr || !insertedAsst) {
+        console.error(
+          "[/api/sessions/messages] assistant insert",
+          insertAsstErr
+        );
+        throw new Error(
+          insertAsstErr?.message ?? "could not insert assistant reply"
+        );
+      }
+      assistantMessageId = (insertedAsst as MessageRow).id;
+
+      await supabase
+        .from("sessions")
+        .update({
+          message_count: session.message_count + 2,
+          last_activity_at: now(),
+          updated_at: now(),
+        })
+        .eq("id", sessionId);
+
+      await emit({ type: "phase_status", phase: "synthesis", status: "done" });
+    } catch (err) {
+      console.error("[/api/sessions/messages] pipeline failed", err);
+      try {
+        const message = err instanceof Error ? err.message : "agent failed";
+        await writer.write(
+          encoder.encode(
+            encodeAgentEvent({ type: "error", message } as AgentEvent)
+          )
+        );
+      } catch {
+        /* writer already closed */
+      }
+    } finally {
+      try {
+        await writer.write(
+          encoder.encode(
+            encodeAgentEvent({
+              type: "done",
+              assistantMessageId,
+            })
+          )
+        );
+      } catch {
+        /* writer closed */
+      }
+      try {
+        await writer.close();
+      } catch {
+        /* already closed */
+      }
+      await releaseLock();
+      req.signal.removeEventListener("abort", onClientGone);
+    }
+  })();
+
+  return new Response(stream.readable, {
+    status: 200,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-content-type-options": "nosniff",
+      "x-agent-stream": "v1",
+      "X-User-Message-Id": userMsg.id,
+    },
+  });
 }
 
 /** Collapse whitespace and cap length for `sessions.label` / `session_target`. */
