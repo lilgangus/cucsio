@@ -1,4 +1,5 @@
 export { ChatSession } from "./chat-session";
+export type { ChatSessionProps } from "./chat-session";
 export { useChatSession } from "./use-chat-session";
 export { useChatSessionCtx } from "./use-chat-session";
 export { MessageList } from "./message-list";

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
 import {
   ChatSession,
@@ -96,6 +96,8 @@ function MockUsersSeed() {
 }
 
 export default function DevChatPage() {
+  const [showChat, setShowChat] = useState(true);
+
   return (
     <MockChatDriver>
       <MockUsersSeed />
@@ -134,17 +136,26 @@ export default function DevChatPage() {
             <Button variant="outline" onClick={() => void streamLongReply()}>
               Long AI reply
             </Button>
+            {/* Toggle to verify WebSocket subscription drops on unmount */}
+            <Button
+              variant={showChat ? "secondary" : "outline"}
+              onClick={() => setShowChat((v) => !v)}
+            >
+              {showChat ? "Unmount ChatSession" : "Mount ChatSession"}
+            </Button>
           </div>
         </div>
 
         <section className="flex flex-1 min-h-0 px-4 py-6">
           <div className="mx-auto grid w-full max-w-6xl min-h-0 grid-cols-[minmax(0,1fr)_320px] gap-4">
             <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-background shadow-sm">
-              <ChatSession
-                sessionId="mock"
-                projectId="mock"
-                identity={DEV_IDENTITY}
-              />
+              {showChat && (
+                <ChatSession
+                  sessionId="mock"
+                  projectId="mock"
+                  identity={DEV_IDENTITY}
+                />
+              )}
             </div>
             <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-background shadow-sm">
               <Backboard projectId="mock" />
