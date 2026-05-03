@@ -55,7 +55,7 @@ export default async function RoomLayout({ children, params }: Props) {
   >;
 
   return (
-    <RoomProviders>
+    <RoomProviders projectId={project.id}>
       <div className="flex h-screen min-h-0 flex-col">
         <RoomGuard roomCode={normalized} />
         <TopBar

@@ -2,13 +2,24 @@
 
 import type { ReactNode } from "react";
 
+import { ProjectPresenceProvider } from "@/lib/realtime/project-presence-context";
 import { SessionFocusProvider } from "@/lib/realtime/session-focus-context";
 
+type Props = {
+  projectId: string;
+  children: ReactNode;
+};
+
 /**
- * Clients-only providers for anything under the room top bar — session
- * focus for cross-component presence aggregation, master prompt sync hooks
- * layered on descendants, etc.
+ * Client providers for room UI: focused session overlay context, then a single
+ * project realtime presence subscriber shared by TopBar + forest.
  */
-export function RoomProviders({ children }: { children: ReactNode }) {
-  return <SessionFocusProvider>{children}</SessionFocusProvider>;
+export function RoomProviders({ projectId, children }: Props) {
+  return (
+    <SessionFocusProvider>
+      <ProjectPresenceProvider projectId={projectId}>
+        {children}
+      </ProjectPresenceProvider>
+    </SessionFocusProvider>
+  );
 }
