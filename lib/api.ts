@@ -119,6 +119,7 @@ export function searchProject(
 export type CreateSessionBody = {
   projectId: string;
   label?: string;
+  sessionTarget?: string;
 };
 
 export type CreateSessionResponse = { session: SessionRow };
@@ -134,14 +135,14 @@ export type ForkSessionBody = {
   /** Optional. Omit to fork from the latest message in the parent. */
   forkPointMessageId?: string;
   label?: string;
+  sessionTarget?: string;
 };
 
 export type ForkSessionResponse = {
   session: SessionRow;
-  copiedMessages: number;
 };
 
-/** Branch off from an existing session, copying its messages 1..N. */
+/** Branch off from an existing session (no message duplication). */
 export function forkSession(
   parentId: string,
   body: ForkSessionBody = {}

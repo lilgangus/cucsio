@@ -57,7 +57,10 @@ export function buildForestFromSessions(sessions: SessionRow[]): Forest {
       id: row.id,
       treeId,
       parentId: row.parent_session_id,
-      label: row.label?.trim() || (row.parent_session_id ? "Fork" : "Main"),
+      label:
+        row.session_target?.trim() ||
+        row.label?.trim() ||
+        (row.parent_session_id ? "Fork" : "Main"),
       summary: row.summary,
       messageCount: row.message_count,
       createdAt: Date.parse(row.created_at) || 0,

@@ -7,6 +7,7 @@ import type { SessionRow } from "@/types/db";
 type Body = {
   projectId?: unknown;
   label?: unknown;
+  sessionTarget?: unknown;
 };
 
 const UUID_RE =
@@ -45,6 +46,10 @@ export async function POST(req: Request) {
 
   const rawLabel = typeof body.label === "string" ? body.label.trim() : "";
   const label = rawLabel.length > 0 ? rawLabel.slice(0, 64) : null;
+  const rawTarget =
+    typeof body.sessionTarget === "string" ? body.sessionTarget.trim() : "";
+  const sessionTarget =
+    rawTarget.length > 0 ? rawTarget.slice(0, 160) : "General exploration";
 
   const supabase = getSupabaseServer();
   const { data, error } = await supabase
@@ -53,6 +58,7 @@ export async function POST(req: Request) {
       project_id: projectId,
       parent_session_id: null,
       fork_point_message_id: null,
+      session_target: sessionTarget,
       label,
       created_by: clientId,
     })

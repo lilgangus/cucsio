@@ -125,29 +125,43 @@ export function TopBar({
     return () => window.clearTimeout(t);
   }, [masterContext, projectId]);
 
+  const briefPreview = masterContext.trim();
+  const briefHint =
+    briefPreview.length > 0
+      ? briefPreview.length > 140
+        ? `${briefPreview.slice(0, 140)}…`
+        : briefPreview
+      : "Add a shared project brief — goals, glossary, and context every session sees.";
+
   return (
     <>
-      <header className="flex h-14 items-center justify-between gap-4 border-b border-border bg-card px-4">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
+      <header className="flex min-h-14 items-stretch gap-3 border-b border-border bg-card px-3 py-2 sm:gap-4 sm:px-4">
+        <div className="flex shrink-0 items-center">
           <Link href="/" className="font-heading text-base font-semibold">
             cucsio
           </Link>
-          <button
-            type="button"
-            onClick={() => setMasterOpen(true)}
-            className="group min-w-0 truncate text-left text-sm text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
-            aria-label={`Edit project brief: ${projectName}`}
-          >
-            <span className="truncate font-medium text-foreground">
-              {projectName}
-            </span>
-            <span className="ml-1 text-xs group-hover:text-muted-foreground">
-              (brief)
-            </span>
-          </button>
         </div>
 
-        <div className="flex shrink-0 items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setMasterOpen(true)}
+          className="group flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-2.5 text-left shadow-sm ring-offset-background transition hover:border-border hover:bg-muted/55 hover:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          aria-label={`Edit project brief: ${projectName}`}
+        >
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold leading-tight text-foreground">
+              {projectName}
+            </div>
+            <div className="mt-0.5 line-clamp-2 text-xs leading-snug text-muted-foreground group-hover:text-muted-foreground/90">
+              {briefHint}
+            </div>
+          </div>
+          <span className="hidden shrink-0 rounded-lg border border-border/80 bg-background/90 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground sm:inline">
+            Brief
+          </span>
+        </button>
+
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           <PresenceBar />
 
           <Button

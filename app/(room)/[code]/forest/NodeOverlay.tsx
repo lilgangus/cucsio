@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
@@ -28,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ApiError, sendMessage } from "@/lib/api";
 import { loadIdentity, type Identity } from "@/lib/identity";
 import type { PresenceState } from "@/lib/realtime/channels";
+import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import { cn } from "@/lib/utils";
 import type { MessageRow, SessionRow } from "@/types/db";
 
@@ -102,7 +104,15 @@ export type OverlayProps = {
   isPending: boolean;
   pendingMode?: "new-tree" | "new-fork";
   /** Async hook the parent provides for first-send creation flows. */
-  onSendNew?: (content: string) => Promise<{ sessionId: string } | null>;
+  onSendNew?: (
+    content: string,
+    sessionTarget?: string
+  ) => Promise<{ sessionId: string } | null>;
+  /** Optional lineage/context box for a forked session or pending fork. */
+  forkContext?: {
+    ancestorTargets: string[];
+    inheritedSummary: string | null;
+  } | null;
   onBranchOff: () => void;
   onClose: () => void;
 };
@@ -115,6 +125,7 @@ export function NodeOverlay(props: OverlayProps) {
     isPending,
     pendingMode,
     onSendNew,
+    forkContext,
     onBranchOff,
     onClose,
   } = props;
@@ -183,8 +194,53 @@ export function NodeOverlay(props: OverlayProps) {
 
   // Send action --------------------------------------------------------
   const [draft, setDraft] = useState("");
+  const [pendingTarget, setPendingTarget] = useState("");
+  const [sessionTargetDraft, setSessionTargetDraft] = useState("");
+  const sessionTargetFocusedRef = useRef(false);
+  const sessionTargetLastWrittenRef = useRef("");
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!isPending) return;
+    if (pendingMode === "new-fork") {
+      setPendingTarget(forkContext?.ancestorTargets[0] ?? "");
+      return;
+    }
+    setPendingTarget("");
+  }, [isPending, pendingMode, forkContext]);
+
+  useEffect(() => {
+    if (!session) return;
+    const fromServer = session.session_target ?? "";
+    if (sessionTargetFocusedRef.current) return;
+    setSessionTargetDraft(fromServer);
+    sessionTargetLastWrittenRef.current = fromServer.trim();
+  }, [session?.id, session?.session_target]);
+
+  useEffect(() => {
+    if (isPending || !sessionId) return;
+    const t = window.setTimeout(async () => {
+      const next = sessionTargetDraft.trim();
+      if (next === sessionTargetLastWrittenRef.current) return;
+      try {
+        const supabase = getSupabaseBrowser();
+        const { error } = await supabase
+          .from("sessions")
+          .update({
+            session_target: next,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", sessionId);
+        if (error) throw error;
+        sessionTargetLastWrittenRef.current = next;
+      } catch (e) {
+        console.warn("[NodeOverlay] session_target save failed", e);
+        toast.error("Could not save session target");
+      }
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [sessionTargetDraft, sessionId, isPending]);
 
   useEffect(() => {
     const id = requestAnimationFrame(() => inputRef.current?.focus());
@@ -199,7 +255,10 @@ export function NodeOverlay(props: OverlayProps) {
     setSending(true);
     try {
       if (isPending && onSendNew) {
-        const created = await onSendNew(text);
+        const created = await onSendNew(
+          text,
+          pendingTarget.trim() || undefined
+        );
         if (!created) return;
         // The parent will swap our `target` to point at the new
         // session id; nothing else for us to do here.
@@ -218,7 +277,15 @@ export function NodeOverlay(props: OverlayProps) {
     } finally {
       setSending(false);
     }
-  }, [draft, sending, lockedByOther, isPending, onSendNew, sessionId]);
+  }, [
+    draft,
+    sending,
+    lockedByOther,
+    isPending,
+    onSendNew,
+    pendingTarget,
+    sessionId,
+  ]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Escape") {
@@ -241,12 +308,17 @@ export function NodeOverlay(props: OverlayProps) {
   }, [messages.length]);
 
   const inputDisabled = lockedByOther || sending;
-  const headline =
+
+  const pendingHeadline =
     pendingMode === "new-tree"
       ? "Start a new tree"
       : pendingMode === "new-fork"
         ? "Branch off — first message starts the new node"
-        : session?.label?.trim() || (session?.parent_session_id ? "Fork" : "Main chat");
+        : "Chat";
+
+  const overlayAriaLabel = isPending
+    ? pendingHeadline
+    : sessionTargetDraft.trim() || "Session chat";
 
   const canBranch = !isPending && messages.length > 0;
 
@@ -264,19 +336,45 @@ export function NodeOverlay(props: OverlayProps) {
       <div
         role="dialog"
         aria-modal
-        aria-label={headline}
+        aria-label={overlayAriaLabel}
         onClick={(e) => e.stopPropagation()}
         className={cn(
           "relative flex h-full max-h-[90%] w-full max-w-3xl flex-col overflow-hidden rounded-3xl",
           "border border-border bg-card shadow-2xl"
         )}
       >
-        <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
-          <div className="flex min-w-0 items-center gap-2">
+        <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-3 sm:px-5">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <SparklesIcon className="size-4 shrink-0 text-muted-foreground" />
-            <span className="truncate text-sm">{headline}</span>
+            {isPending ? (
+              <span className="truncate text-sm text-muted-foreground">
+                {pendingHeadline}
+              </span>
+            ) : (
+              <div className="min-w-0 flex-1">
+                <label
+                  htmlFor="overlay-session-target"
+                  className="sr-only"
+                >
+                  Session target
+                </label>
+                <Input
+                  id="overlay-session-target"
+                  value={sessionTargetDraft}
+                  onChange={(e) => setSessionTargetDraft(e.target.value)}
+                  onFocus={() => {
+                    sessionTargetFocusedRef.current = true;
+                  }}
+                  onBlur={() => {
+                    sessionTargetFocusedRef.current = false;
+                  }}
+                  placeholder="What this session is for…"
+                  className="h-9 w-full border-dashed font-medium"
+                />
+              </div>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <PresenceChip others={others} />
             <Button
               variant="ghost"
@@ -303,6 +401,36 @@ export function NodeOverlay(props: OverlayProps) {
           ref={scrollerRef}
           className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-5"
         >
+          {forkContext ? (
+            <div className="rounded-xl border border-blue-500/25 bg-blue-500/10 px-3 py-2 text-xs text-blue-900 dark:text-blue-100">
+              <p className="font-medium">
+                Fork context: {forkContext.ancestorTargets.join(" -> ")}
+              </p>
+              {forkContext.inheritedSummary ? (
+                <p className="mt-1 line-clamp-3 text-[11px] text-blue-800/90 dark:text-blue-200/90">
+                  {forkContext.inheritedSummary}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {isPending ? (
+            <div className="rounded-xl border border-border bg-muted/40 px-3 py-3">
+              <label
+                htmlFor="pending-session-target"
+                className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+              >
+                Optional session target
+              </label>
+              <Input
+                id="pending-session-target"
+                value={pendingTarget}
+                onChange={(e) => setPendingTarget(e.target.value)}
+                placeholder="What this new session should attempt to fix..."
+              />
+            </div>
+          ) : null}
+
           {pendingMode === "new-tree" && messages.length === 0 ? (
             <EmptyHint
               text="Send the first message to plant this tree."
