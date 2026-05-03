@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDownIcon, StethoscopeIcon } from "lucide-react";
+import { BrainCircuitIcon, ChevronDownIcon } from "lucide-react";
 import { useMemo, useState, type SyntheticEvent } from "react";
 
 import { AgenticTimeline } from "@/components/chat/AgenticTimeline";
@@ -17,7 +17,7 @@ type Props = {
   trace: unknown;
   /**
    * Saved assistant body (`messages.content`). Used only when the trace row
-   * has no synthesis text so "Attending-style synthesis" still shows the reply.
+   * has no synthesis text so the grounded synthesis phase still shows the reply.
    */
   assistantReply?: string;
   /** Forward to `<AgenticTimeline />` so [[<id>]] chips stay clickable. */
@@ -31,7 +31,7 @@ type Props = {
 };
 
 /**
- * Renders the saved "clinical team" trace under an assistant bubble.
+ * Renders the saved agent trace under an assistant bubble.
  * **Expanded by default** so differential / evidence / synthesis steps do
  * not look like they vanished after streaming ends — tap the header to
  * collapse for a denser transcript.
@@ -119,13 +119,13 @@ export function PersistedAgentTrace({
           "outline-none focus-visible:ring-2 focus-visible:ring-ring"
         )}
       >
-        <StethoscopeIcon className="size-3.5 shrink-0 opacity-80" aria-hidden />
+        <BrainCircuitIcon className="size-3.5 shrink-0 opacity-80" aria-hidden />
         <span className="flex-1 text-left">
           Reasoning trace
           <span className="ml-1.5 font-mono text-[10px] opacity-70">
             ({phaseCount} phase{phaseCount === 1 ? "" : "s"}
             {toolCount > 0
-              ? ` · ${toolCount} tool call${toolCount === 1 ? "" : "s"}`
+              ? ` / ${toolCount} tool call${toolCount === 1 ? "" : "s"}`
               : ""}
             )
           </span>

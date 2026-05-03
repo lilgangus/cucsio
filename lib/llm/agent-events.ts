@@ -8,15 +8,15 @@
  * works through any proxy that doesn't understand SSE.
  *
  * Protocol — every event has a discriminating `type`:
- *   - `phase`          marks the start of a visual section (Differential
- *                      brainstorming, Evidence retrieval, Attending
- *                      synthesis). UI renders a header with status.
+ *   - `phase`          marks the start of a visual section (intent planning,
+ *                      tool evidence, grounded synthesis). UI renders a
+ *                      header with status.
  *   - `phase_status`   marks a phase as `done` (collapse it / stop the
  *                      pulse animation). No body change.
  *   - `delta`          appends streamed text to the named phase's body.
  *   - `tool_call`      visible "tool" log line in evidence phase. Real
  *                      DB call underneath, fake-named so the trace reads
- *                      like a clinical workup (`fetch_session_digests`,
+ *                      like explicit tools (`fetch_session_digests`,
  *                      `read_recent_messages`, `pull_pinned_highlights`).
  *   - `tool_result`    one-line result the user sees ("Read session
  *                      [[abc]]: last 15 messages"). Pairs with a tool_call.
@@ -30,9 +30,9 @@ import type { Uuid } from "@/types/db";
 export type AgentPhaseId = "differential" | "evidence" | "synthesis";
 
 export const AGENT_PHASE_LABELS: Record<AgentPhaseId, string> = {
-  differential: "Differential brainstorming",
-  evidence: "Evidence retrieval",
-  synthesis: "Attending-style synthesis",
+  differential: "Intent planning",
+  evidence: "Tool evidence",
+  synthesis: "Grounded synthesis",
 };
 
 export type AgentEvent =

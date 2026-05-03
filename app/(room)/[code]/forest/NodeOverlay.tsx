@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, sendMessage } from "@/lib/api";
+import { useAgentActivity } from "@/lib/agent/agent-activity-context";
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { useAgentTimeline, safeParseTrace } from "@/lib/llm/agent-timeline-state";
 import type { PresenceState } from "@/lib/realtime/channels";
@@ -171,6 +172,7 @@ export function NodeOverlay(props: OverlayProps) {
   } = props;
 
   const sessionId = session?.id ?? null;
+  const sessionTargetFromServer = session?.session_target ?? "";
 
   // Live messages still come from this component (no channel-dedup
   // risk: the messages hook uses a `session-messages:<id>` topic that
@@ -246,6 +248,7 @@ export function NodeOverlay(props: OverlayProps) {
     reset: resetAgentTimeline,
     start: startAgentTimeline,
   } = useAgentTimeline();
+  const { trigger: triggerAgent } = useAgentActivity();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** Abort ongoing `/messages` fetch when the user closes the overlay or it unmounts. */
   const sendAbortRef = useRef<AbortController | null>(null);
@@ -261,16 +264,17 @@ export function NodeOverlay(props: OverlayProps) {
   // changes and used to re-fill the parent's target — wiping what the user typed.
   useEffect(() => {
     if (!isPending) return;
-    setPendingTarget("");
+    const raf = requestAnimationFrame(() => setPendingTarget(""));
+    return () => cancelAnimationFrame(raf);
   }, [isPending]);
 
   useEffect(() => {
-    if (!session) return;
-    const fromServer = session.session_target ?? "";
+    if (!sessionId) return;
+    const fromServer = sessionTargetFromServer;
     if (sessionTargetFocusedRef.current) return;
     setSessionTargetDraft(fromServer);
     sessionTargetLastWrittenRef.current = fromServer.trim();
-  }, [session?.id, session?.session_target]);
+  }, [sessionId, sessionTargetFromServer]);
 
   useEffect(() => {
     if (isPending || !sessionId) return;
@@ -332,6 +336,27 @@ export function NodeOverlay(props: OverlayProps) {
     setSending(true);
     resetAgentTimeline();
     startAgentTimeline();
+    triggerAgent({
+      reason: `chat query: "${text.slice(0, 80)}"`,
+      source: "chat",
+      targetPrompt: text,
+      context: [
+        pendingTarget.trim()
+          ? `Pending session target: ${pendingTarget.trim()}`
+          : null,
+        sessionTargetDraft.trim()
+          ? `Session target: ${sessionTargetDraft.trim()}`
+          : null,
+        forkContext?.ancestorTargets.length
+          ? `Source branches: ${forkContext.ancestorTargets.join(" | ")}`
+          : null,
+        session?.smart_context
+          ? `Upstream context: ${session.smart_context.slice(0, 240)}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    });
     try {
       if (isPending && onSendNew) {
         const created = await onSendNew(
@@ -373,10 +398,14 @@ export function NodeOverlay(props: OverlayProps) {
     isPending,
     onSendNew,
     pendingTarget,
+    sessionTargetDraft,
+    forkContext,
+    session,
     sessionId,
     applyAgentEvent,
     resetAgentTimeline,
     startAgentTimeline,
+    triggerAgent,
   ]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
