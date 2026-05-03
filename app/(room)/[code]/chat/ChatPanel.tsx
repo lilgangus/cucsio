@@ -13,13 +13,15 @@ import {
 import { toast } from "sonner";
 
 import { UpstreamKeyDetails } from "@/components/chat/UpstreamKeyDetails";
-import { AssistantStreamBubble } from "@/components/chat/AssistantStreamBubble";
+import { AgenticTimeline } from "@/components/chat/AgenticTimeline";
 import { ChatBubble, type ChatBubbleSenderChip } from "@/components/chat/ChatBubble";
+import { PersistedAgentTrace } from "@/components/chat/PersistedAgentTrace";
 import { SelectableMessage } from "@/components/highlight/SelectableMessage";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, createSession, sendMessage } from "@/lib/api";
 import { loadIdentity, type Identity } from "@/lib/identity";
+import { useAgentTimeline, safeParseTrace } from "@/lib/llm/agent-timeline-state";
 import { useSessionFocus } from "@/lib/realtime/session-focus-context";
 
 import {
@@ -69,7 +71,7 @@ function resolveSenderChip(
  * over Realtime, send through `/api/sessions/:id/messages` (OpenRouter).
  */
 export function ChatPanel({ roomCode, projectId }: Props) {
-  const { setOpenSessionChatImpl } = useSessionFocus();
+  const { setOpenSessionChatImpl, openSessionChat } = useSessionFocus();
   const { sessions, loading: sessionsLoading, error: sessionsError } =
     useProjectSessions(projectId);
   const [pickedId, setPickedId] = useState<string | null>(null);
@@ -123,9 +125,12 @@ export function ChatPanel({ roomCode, projectId }: Props) {
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [streamingAssistant, setStreamingAssistant] = useState<string | null>(
-    null
-  );
+  const {
+    state: agentState,
+    apply: applyAgentEvent,
+    reset: resetAgentTimeline,
+    start: startAgentTimeline,
+  } = useAgentTimeline();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
@@ -137,20 +142,30 @@ export function ChatPanel({ roomCode, projectId }: Props) {
   /** Changing session while a stream is in flight must release the server lock. */
   useEffect(() => {
     sendAbortRef.current?.abort();
-  }, [sessionId]);
+    resetAgentTimeline();
+  }, [sessionId, resetAgentTimeline]);
 
-  const showAssistantStream = useMemo(() => {
-    if (streamingAssistant === null) return false;
-    const last = messages[messages.length - 1];
-    if (!last || last.role !== "assistant") return true;
-    return last.content.trim() !== streamingAssistant.trim();
-  }, [messages, streamingAssistant]);
+  const showAgentTimeline = useMemo(() => {
+    if (agentState.phases.length === 0 && !agentState.running) return false;
+    const doneId = agentState.finalAssistantMessageId;
+    if (doneId && !agentState.running) {
+      const row = messages.find((m) => m.id === doneId);
+      if (row && safeParseTrace(row.agent_trace)) return false;
+    }
+    return true;
+  }, [agentState, messages]);
 
+  const synthesisLen = agentState.byId.synthesis?.text.length ?? 0;
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages.length, streamingAssistant, showAssistantStream]);
+  }, [
+    messages.length,
+    showAgentTimeline,
+    agentState.phases.length,
+    synthesisLen,
+  ]);
 
   useEffect(() => {
     if (!jumpMessageId || !sessionId) return;
@@ -172,15 +187,16 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     const ac = new AbortController();
     sendAbortRef.current = ac;
     setSending(true);
-    setStreamingAssistant("");
+    resetAgentTimeline();
+    startAgentTimeline();
     try {
       await sendMessage(sessionId, { content: text }, {
-        onAssistantDelta: (acc) => setStreamingAssistant(acc),
+        onAgentEvent: applyAgentEvent,
         signal: ac.signal,
       });
       setDraft("");
     } catch (err) {
-      setStreamingAssistant(null);
+      resetAgentTimeline();
       if (isSendAbortError(err)) return;
       const msg =
         err instanceof ApiError
@@ -195,7 +211,15 @@ export function ChatPanel({ roomCode, projectId }: Props) {
       if (sendAbortRef.current === ac) sendAbortRef.current = null;
       setSending(false);
     }
-  }, [draft, sending, sessionId, lockedByOther]);
+  }, [
+    draft,
+    sending,
+    sessionId,
+    lockedByOther,
+    applyAgentEvent,
+    resetAgentTimeline,
+    startAgentTimeline,
+  ]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -315,6 +339,14 @@ export function ChatPanel({ roomCode, projectId }: Props) {
                   }
                 />
               );
+              const trace =
+                m.role === "assistant" ? (
+                  <PersistedAgentTrace
+                    trace={m.agent_trace}
+                    assistantReply={m.content}
+                    onOpenSession={(sid) => openSessionChat(sid)}
+                  />
+                ) : null;
               return sessionId ? (
                 <SelectableMessage
                   key={m.id}
@@ -322,13 +354,20 @@ export function ChatPanel({ roomCode, projectId }: Props) {
                   messageId={m.id}
                 >
                   {bubble}
+                  {trace}
                 </SelectableMessage>
               ) : (
-                <div key={m.id}>{bubble}</div>
+                <div key={m.id}>
+                  {bubble}
+                  {trace}
+                </div>
               );
             })}
-            {showAssistantStream ? (
-              <AssistantStreamBubble text={streamingAssistant!} />
+            {showAgentTimeline ? (
+              <AgenticTimeline
+                state={agentState}
+                onOpenSession={(sid) => openSessionChat(sid)}
+              />
             ) : null}
           </>
         )}

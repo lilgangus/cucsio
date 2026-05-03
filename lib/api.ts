@@ -5,6 +5,10 @@ import {
   loadIdentity,
   type Identity,
 } from "@/lib/identity";
+import {
+  takeCompleteLines,
+  type AgentEvent,
+} from "@/lib/llm/agent-events";
 import type { HighlightRow, ProjectRow, SessionRow, UserRow } from "@/types/db";
 
 /** Thrown by `postJSON` when the server returns a non-2xx. */
@@ -97,16 +101,71 @@ export type SearchProjectBody = {
   query: string;
 };
 
-export type SearchProjectResponse = {
-  answer: string;
-  selectedSessionIds: string[];
-  searchPlan: string;
+export type SearchProjectOptions = {
+  /** Streamed agent timeline events; same protocol as `sendMessage`. */
+  onAgentEvent?: (event: AgentEvent) => void;
+  signal?: AbortSignal;
 };
 
-export function searchProject(
-  body: SearchProjectBody
-): Promise<SearchProjectResponse> {
-  return postJSON<SearchProjectResponse>("/api/search", body);
+/**
+ * Project-wide search. The server streams `AgentEvent` lines (NDJSON)
+ * just like the chat endpoint; the right panel renders them in the same
+ * `<AgenticTimeline />`. Returns once the stream closes.
+ */
+export async function searchProject(
+  body: SearchProjectBody,
+  options?: SearchProjectOptions
+): Promise<void> {
+  const id = loadIdentity();
+  const res = await fetch("/api/search", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(id ? { [CLIENT_ID_HEADER]: id.clientId } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: options?.signal,
+  });
+
+  if (!res.ok) {
+    let payload: unknown = null;
+    try {
+      payload = await res.json();
+    } catch {
+      /* empty */
+    }
+    const message =
+      payload && typeof payload === "object" && "error" in payload
+        ? String((payload as { error: unknown }).error)
+        : `Request failed with ${res.status}`;
+    throw new ApiError(res.status, message, payload);
+  }
+
+  if (!res.body) return;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const { events, rest } = takeCompleteLines(buffer);
+      buffer = rest;
+      for (const event of events) {
+        options?.onAgentEvent?.(event);
+      }
+    }
+    if (buffer.trim().length > 0) {
+      const { events } = takeCompleteLines(`${buffer}\n`);
+      for (const event of events) {
+        options?.onAgentEvent?.(event);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 // --- Sessions / chat -------------------------------------------------------
@@ -151,17 +210,22 @@ export function forkSession(
 export type SendMessageBody = { content: string };
 
 export type SendMessageOptions = {
-  /** Fires as assistant tokens arrive (`text/plain` stream body). */
-  onAssistantDelta?: (accumulatedText: string) => void;
+  /**
+   * Fires once per parsed agent event (phase boundaries, tool calls,
+   * streamed deltas). UI uses this to drive the visible timeline.
+   * Implemented in `lib/llm/agent-events.ts`.
+   */
+  onAgentEvent?: (event: AgentEvent) => void;
   /** Abort to cancel the stream (e.g. user closed chat); server clears session lock. */
   signal?: AbortSignal;
 };
 
 /**
- * Send one message in a session. The assistant reply streams as UTF-8 text;
- * optional `onAssistantDelta` receives the growing string. The final message
- * is still saved by the server and appears via Realtime. This throws an
- * `ApiError` with `status === 409` if someone else is mid-turn.
+ * Send one message in a session. The reply streams as NDJSON over a
+ * `text/plain` body (see `/api/sessions/[id]/messages`). Each line is one
+ * `AgentEvent`; the caller's `onAgentEvent` is invoked once per event.
+ *
+ * Throws `ApiError` with `status === 409` if someone else is mid-turn.
  */
 export async function sendMessage(
   sessionId: string,
@@ -202,13 +266,23 @@ export async function sendMessage(
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  let accumulated = "";
+  let buffer = "";
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      accumulated += decoder.decode(value, { stream: true });
-      options?.onAssistantDelta?.(accumulated);
+      buffer += decoder.decode(value, { stream: true });
+      const { events, rest } = takeCompleteLines(buffer);
+      buffer = rest;
+      for (const event of events) {
+        options?.onAgentEvent?.(event);
+      }
+    }
+    if (buffer.trim().length > 0) {
+      const { events } = takeCompleteLines(`${buffer}\n`);
+      for (const event of events) {
+        options?.onAgentEvent?.(event);
+      }
     }
   } finally {
     reader.releaseLock();
