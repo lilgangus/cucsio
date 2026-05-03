@@ -177,10 +177,23 @@ export async function POST(req: Request, ctx: Params) {
       await supabase.from("sessions").update(metaPatch).eq("id", sessionId);
     }
 
+    const { data: promptSession } = await supabase
+      .from("sessions")
+      .select("session_target, smart_context")
+      .eq("id", sessionId)
+      .maybeSingle();
+
+    const freshTarget = String(
+      (promptSession as { session_target?: string } | null)?.session_target ?? ""
+    ).trim();
     const sessionTargetForPrompt =
-      isFirstUserMessage && !(session.session_target ?? "").trim()
-        ? labelFromFirstUserMessage(content)
-        : (session.session_target ?? "").trim();
+      freshTarget ||
+      (isFirstUserMessage ? labelFromFirstUserMessage(content) : "") ||
+      (session.session_target ?? "").trim();
+
+    const smartContextForPrompt = String(
+      (promptSession as { smart_context?: string } | null)?.smart_context ?? ""
+    ).trim();
 
     const { data: historyDesc, error: histErr } = await supabase
       .from("messages")
@@ -204,6 +217,7 @@ export async function POST(req: Request, ctx: Params) {
         (projectRow as { master_context?: string } | null)?.master_context ??
         "",
       sessionTarget: sessionTargetForPrompt,
+      smartContext: smartContextForPrompt || undefined,
       isNewEmptySession: isFirstUserMessage,
     });
 

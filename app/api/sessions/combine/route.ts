@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { computeAndSaveSmartContext } from "@/lib/llm/smart-context";
 import { getClientId } from "@/lib/server/request";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import type { SessionParentRow, SessionRow } from "@/types/db";
@@ -9,6 +10,8 @@ type Body = {
   parentIds?: unknown;
   /** Optional label for the new node. */
   label?: unknown;
+  /** Same as fork — drives smart-context distillation from ancestors. */
+  sessionTarget?: unknown;
 };
 
 const UUID_RE =
@@ -63,6 +66,10 @@ export async function POST(req: Request) {
   const rawLabel = typeof body.label === "string" ? body.label.trim() : "";
   /** Null until the first user message names the session (see messages route). */
   const label = rawLabel.length > 0 ? rawLabel.slice(0, 64) : null;
+  const rawTarget =
+    typeof body.sessionTarget === "string" ? body.sessionTarget.trim() : "";
+  const sessionTarget =
+    rawTarget.length > 0 ? rawTarget.slice(0, 160) : "General exploration";
 
   const supabase = getSupabaseServer();
 
@@ -106,6 +113,7 @@ export async function POST(req: Request) {
       project_id: projectId,
       parent_session_id: parentIdList[0],
       fork_point_message_id: null,
+      session_target: sessionTarget,
       label,
       created_by: clientId,
       created_at: now,
@@ -140,6 +148,12 @@ export async function POST(req: Request) {
 
   // Intentionally no message copy: the UI shows only "Branched from …"
   // until the user types; parent context stays on the parent nodes.
+
+  await computeAndSaveSmartContext(supabase, {
+    childSessionId: childRow.id,
+    seedParentIds: parentIdList,
+    sessionTarget,
+  });
 
   const { data: refreshed } = await supabase
     .from("sessions")

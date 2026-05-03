@@ -264,6 +264,7 @@ export type CombineContextsBody = {
   /** Parent session ids (no message copy; links only). */
   parentIds: string[];
   label?: string;
+  sessionTarget?: string;
 };
 
 export type CombineContextsResponse = {

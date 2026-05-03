@@ -12,6 +12,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 
+import { UpstreamKeyDetails } from "@/components/chat/UpstreamKeyDetails";
 import { AssistantStreamBubble } from "@/components/chat/AssistantStreamBubble";
 import { ChatBubble, type ChatBubbleSenderChip } from "@/components/chat/ChatBubble";
 import { SelectableMessage } from "@/components/highlight/SelectableMessage";
@@ -266,14 +267,21 @@ export function ChatPanel({ roomCode, projectId }: Props) {
         </div>
       </header>
 
+      {activeSession?.smart_context?.trim() ? (
+        <div className="shrink-0 border-b border-border px-4 py-3">
+          <UpstreamKeyDetails content={activeSession.smart_context} />
+        </div>
+      ) : null}
+
       {sessionsError ? (
         <p className="p-4 text-sm text-destructive">{sessionsError}</p>
       ) : null}
 
-      <div
-        ref={scrollerRef}
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-4"
-      >
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scrollerRef}
+          className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-4"
+        >
         {sessionsLoading ? (
           <p className="text-center text-sm text-muted-foreground">
             Loading sessions…
@@ -324,51 +332,53 @@ export function ChatPanel({ roomCode, projectId }: Props) {
             ) : null}
           </>
         )}
-      </div>
-
-      {lockedByOther ? (
-        <div className="flex shrink-0 items-center gap-2 border-t border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
-          <span>
-            {lockSenderChip
-              ? `${lockSenderChip.label} is sending…`
-              : "Someone is sending…"}
-            {" "}Inputs pause until the reply is saved.
-          </span>
         </div>
-      ) : null}
 
-      <form
-        className="flex shrink-0 items-end gap-2 border-t border-border bg-card/80 px-4 py-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit();
-        }}
-      >
-        <Textarea
-          ref={inputRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKeyDown}
-          disabled={inputDisabled || emptyProject}
-          placeholder={
-            emptyProject
-              ? "Create a session first…"
-              : lockedByOther
-                ? "Waiting for the current reply…"
-                : "Message the assistant…"
-          }
-          rows={2}
-          className="resize-none"
-        />
-        <Button
-          type="submit"
-          disabled={
-            inputDisabled || emptyProject || draft.trim().length === 0
-          }
+        {lockedByOther ? (
+          <div className="flex shrink-0 items-center gap-2 border-t border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
+            <span>
+              {lockSenderChip
+                ? `${lockSenderChip.label} is sending…`
+                : "Someone is sending…"}
+              {" "}Inputs pause until the reply is saved.
+            </span>
+          </div>
+        ) : null}
+
+        <form
+          className="flex shrink-0 items-end gap-2 border-t border-border bg-card/80 px-4 py-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
         >
-          {sending ? "Sending…" : "Send"}
-        </Button>
-      </form>
+          <Textarea
+            ref={inputRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKeyDown}
+            disabled={inputDisabled || emptyProject}
+            placeholder={
+              emptyProject
+                ? "Create a session first…"
+                : lockedByOther
+                  ? "Waiting for the current reply…"
+                  : "Message the assistant…"
+            }
+            rows={2}
+            className="resize-none"
+          />
+          <Button
+            type="submit"
+            disabled={
+              inputDisabled || emptyProject || draft.trim().length === 0
+            }
+          >
+            {sending ? "Sending…" : "Send"}
+          </Button>
+        </form>
+
+      </div>
     </section>
   );
 }

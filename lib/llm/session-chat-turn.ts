@@ -9,8 +9,12 @@ export type BuildChatSystemPromptInput = {
   masterContext: string;
   sessionTarget: string;
   /**
-   * True for the first user message in a session that had no messages yet
-   * (e.g. brand-new tree). Forks that copy history already have messages.
+   * Distilled upstream lineage relevant to this session's goal (fork/combine).
+   */
+  smartContext?: string;
+  /**
+   * True for the first user message when this session has no messages yet
+   * (new tree, fork, or combine — no copied parent thread).
    */
   isNewEmptySession: boolean;
 };
@@ -18,12 +22,20 @@ export type BuildChatSystemPromptInput = {
 export function buildChatSystemPrompt(
   input: BuildChatSystemPromptInput
 ): string {
-  const { masterContext, sessionTarget, isNewEmptySession } = input;
+  const { masterContext, sessionTarget, smartContext, isNewEmptySession } =
+    input;
   const parts: string[] = [
     "You are a helpful assistant in a collaborative team workspace with a shared fork-tree of chats.",
     "Answer clearly and concisely unless the user asks for depth.",
     "Format your replies using GitHub-flavored Markdown when it helps: headings, **bold**, *italic*, bullet/numbered lists, `inline code`, fenced ``` code blocks ```, and tables. Use structure when it adds clarity.",
   ];
+
+  const sc = (smartContext ?? "").trim();
+  if (sc) {
+    parts.push(
+      `Key details from prior sessions (AI-generated for this branch — use as background; the live message thread below is the current conversation):\n${sc}`
+    );
+  }
 
   const mc = masterContext.trim();
   if (mc) {

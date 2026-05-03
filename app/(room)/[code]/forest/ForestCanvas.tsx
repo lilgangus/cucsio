@@ -211,6 +211,7 @@ export function ForestCanvas({ projectId }: Props) {
         if (target.kind === "new-combine") {
           const { session } = await combineContexts({
             parentIds: target.parentSessionIds,
+            sessionTarget,
           });
           await sendMessage(session.id, { content }, {
             onAssistantDelta: stream.onAssistantDelta,
