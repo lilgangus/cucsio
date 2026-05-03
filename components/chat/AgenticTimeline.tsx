@@ -3,11 +3,12 @@
 import {
   ActivityIcon,
   AlertTriangleIcon,
+  BrainCircuitIcon,
   CheckCircle2Icon,
   ChevronDownIcon,
+  DatabaseIcon,
   Loader2Icon,
-  MicroscopeIcon,
-  StethoscopeIcon,
+  SparklesIcon,
   TerminalIcon,
 } from "lucide-react";
 import {
@@ -54,8 +55,8 @@ const PHASE_ICON: Record<
   ComponentType<SVGProps<SVGSVGElement>>
 > = {
   differential: ActivityIcon,
-  evidence: MicroscopeIcon,
-  synthesis: StethoscopeIcon,
+  evidence: DatabaseIcon,
+  synthesis: SparklesIcon,
 };
 
 const PHASE_TINT: Record<AgentPhaseId, string> = {
@@ -74,7 +75,7 @@ const PHASE_DOT: Record<AgentPhaseId, string> = {
 };
 
 const PHASE_BLURB: Record<AgentPhaseId, string> = {
-  differential: "Listing hypotheses and what to look for.",
+  differential: "Interpreting the target prompt and choosing what to inspect.",
   evidence: "Pulling sibling sessions, transcripts, and pinned highlights.",
   synthesis: "Composing the answer with cited evidence.",
 };
@@ -122,14 +123,14 @@ export function AgenticTimeline({
             "text-foreground"
           )}
         >
-          <StethoscopeIcon className="size-3.5" aria-hidden />
+          <BrainCircuitIcon className="size-3.5" aria-hidden />
         </span>
         <div className="min-w-0">
           <p className="text-xs font-medium tracking-wide text-foreground">
-            Clinical-team agent
+            Agentic reasoning
           </p>
           <p className="text-[11px] text-muted-foreground">
-            Differential brainstorming → Evidence retrieval → Attending synthesis
+            Intent planning / Tool evidence / Grounded synthesis
           </p>
         </div>
         <div className="ml-auto flex items-center gap-1.5">
@@ -207,7 +208,7 @@ function PhaseRow({
     open &&
     (phase.text.trim().length > 0 ||
       phase.toolSteps.length > 0 ||
-      /** Keep the attending section from looking "empty" once the phase ends. */
+      /** Keep the synthesis section from looking empty once the phase ends. */
       (phase.id === "synthesis" && isDone));
 
   return (
@@ -305,7 +306,7 @@ function ToolTrace({
   if (steps.length === 0) {
     return (
       <p className="text-[11px] text-muted-foreground italic">
-        Awaiting first tool call…
+        Awaiting first tool call...
       </p>
     );
   }
@@ -352,7 +353,7 @@ function ToolTrace({
               </span>
               {step.log ? (
                 <CitationLine
-                  text={`→ ${step.log}`}
+                  text={`-> ${step.log}`}
                   onOpenSession={onOpenSession}
                   className={cn(
                     isError ? "text-destructive" : "text-muted-foreground"
@@ -360,7 +361,7 @@ function ToolTrace({
                 />
               ) : (
                 <span className="text-muted-foreground/80 italic">
-                  → working…
+                  {"-> working..."}
                 </span>
               )}
             </span>
@@ -390,7 +391,7 @@ function PulseDots() {
 
 /**
  * Scratchpad text uses a quieter typographic treatment than the final
- * answer — italic, slightly muted — to read as ephemeral thinking.
+ * answer: italic, slightly muted, to read as ephemeral thinking.
  */
 function ScratchpadText({ text }: { text: string }) {
   return (
@@ -417,8 +418,7 @@ function SynthesisText({
 
   /**
    * Visually distinct from the chat bubble: narrower inset panel, violet
-   * clinical-chart accent, smaller muted type — same markdown substance but
-   * reads as documented workup rather than the conversational reply surface.
+   * accent, and smaller muted type so it reads as the live synthesis stream.
    */
   return (
     <div
@@ -429,11 +429,10 @@ function SynthesisText({
       )}
     >
       <p className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-violet-800 dark:text-violet-200">
-        Clinical chart note
+        Grounded synthesis
       </p>
       <p className="mb-2 border-b border-violet-400/25 pb-2 text-[11px] leading-snug text-muted-foreground dark:border-violet-600/25">
-        Verbatim synthesis stream from this run — same facts as the finalized
-        answer, formatted here as an attending impression (citations preserved).
+        Live synthesis stream from this run. Citations are preserved.
       </p>
       <MarkdownContent
         content={annotated}

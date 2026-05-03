@@ -20,6 +20,7 @@ import { SelectableMessage } from "@/components/highlight/SelectableMessage";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, createSession, sendMessage } from "@/lib/api";
+import { useAgentActivity } from "@/lib/agent/agent-activity-context";
 import { loadIdentity, type Identity } from "@/lib/identity";
 import { useAgentTimeline, safeParseTrace } from "@/lib/llm/agent-timeline-state";
 import { useSessionFocus } from "@/lib/realtime/session-focus-context";
@@ -131,6 +132,7 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     reset: resetAgentTimeline,
     start: startAgentTimeline,
   } = useAgentTimeline();
+  const { trigger: triggerAgent } = useAgentActivity();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
@@ -189,6 +191,22 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     setSending(true);
     resetAgentTimeline();
     startAgentTimeline();
+    triggerAgent({
+      reason: `chat query: "${text.slice(0, 80)}"`,
+      source: "chat",
+      targetPrompt: text,
+      context: [
+        activeSession?.session_target
+          ? `Session target: ${activeSession.session_target}`
+          : null,
+        activeSession?.label ? `Session label: ${activeSession.label}` : null,
+        activeSession?.smart_context
+          ? `Upstream context: ${activeSession.smart_context.slice(0, 240)}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    });
     try {
       await sendMessage(sessionId, { content: text }, {
         onAgentEvent: applyAgentEvent,
@@ -216,9 +234,11 @@ export function ChatPanel({ roomCode, projectId }: Props) {
     sending,
     sessionId,
     lockedByOther,
+    activeSession,
     applyAgentEvent,
     resetAgentTimeline,
     startAgentTimeline,
+    triggerAgent,
   ]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

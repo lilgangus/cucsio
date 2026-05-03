@@ -18,19 +18,18 @@ import {
  * Server-side orchestrator for the visible agent timeline.
  *
  * Two real Nemotron calls + a handful of real DB reads dressed up as
- * named "tools" so the trace reads like a clinical workup:
+ * named "tools" so the trace reads like a real agent workflow:
  *
- *   Phase 1 — Differential brainstorming
- *     One Nemotron call asks for a short scratchpad: hypotheses,
- *     uncertainties, and a one-line plan describing which evidence is
- *     worth pulling. Streamed token-by-token to the UI.
+ *   Phase 1 - Intent planning
+ *     One Nemotron call asks for a short scratchpad: possible readings of
+ *     the user ask, uncertainties, and a one-line evidence plan.
  *
- *   Phase 2 — Evidence retrieval
+ *   Phase 2 - Tool evidence
  *     We run 2-3 fake-named DB reads (`fetch_session_digests`,
  *     `read_recent_messages`, `pull_pinned_highlights`). Each one emits
  *     a `tool_call` followed by a `tool_result` with a one-line log.
  *
- *   Phase 3 — Attending-style synthesis
+ *   Phase 3 - Grounded synthesis
  *     Second Nemotron call. The system prompt now includes the evidence
  *     pack and the brainstorm scratchpad. The streamed tokens are the
  *     final assistant turn — that's what the route handler persists into
@@ -128,16 +127,16 @@ async function streamPhase(args: {
 }
 
 const DIFFERENTIAL_SYSTEM = [
-  "You are the planning step of a clinical-style multi-agent reasoner working inside a fork-tree chat workspace.",
-  "Frame your output as a brief 'differential brainstorm': enumerate 2-4 plausible interpretations of the user's latest ask, call out the largest open uncertainty, then list which pieces of evidence you'd pull from the workspace next.",
-  "Keep it short — 6-10 lines of bullet points total. No code blocks, no headings.",
+  "You are the planning step of a multi-agent reasoner working inside a fork-tree chat workspace.",
+  "Frame your output as brief intent planning: enumerate 2-4 plausible interpretations of the user's latest ask, call out the largest open uncertainty, then list which pieces of evidence you'd pull from the workspace next.",
+  "Keep it short: 6-10 lines of bullet points total. No code blocks, no headings.",
   "End with a single sentence prefixed with `Plan:` describing what you'll fetch (sibling sessions / recent messages / pinned highlights).",
   "Do NOT try to answer the user yet. This is the scratchpad before evidence retrieval.",
 ].join(" ");
 
 const SYNTHESIS_SYSTEM_SUFFIX = [
   "",
-  "You are now in the 'attending-style synthesis' phase of a multi-agent reasoner.",
+  "You are now in the grounded synthesis phase of a multi-agent reasoner.",
   "An evidence pack from the workspace is included below. Cite supporting sessions inline with [[<session_id>]] when you reference them.",
   "Do not invent session ids or facts that are not in the evidence pack.",
   "Format the answer with GitHub-flavored Markdown. Lead with the answer in 1-2 sentences, then go deeper if useful.",
@@ -423,7 +422,7 @@ export function buildSynthesisAugmentation(args: {
   const extraSystem = [
     SYNTHESIS_SYSTEM_SUFFIX,
     "",
-    "## Differential brainstorm (your own scratchpad — do not repeat verbatim)",
+    "## Intent plan (your own scratchpad - do not repeat verbatim)",
     brainstorm || "(empty)",
     "",
     "## Workspace evidence pack",
@@ -461,10 +460,10 @@ export async function runSearchPipeline(args: {
 }): Promise<{ answer: string; selectedSessionIds: string[]; brainstorm: string }> {
   const { emit, supabase, projectId, query } = args;
 
-  // Phase 1 — brainstorm against the query alone.
+  // Phase 1 - plan against the query alone.
   const brainstormSystem = [
-    "You are the planning step of a clinical-style cross-session search agent.",
-    "Given the user's project-wide question, write a 'differential brainstorm':",
+    "You are the planning step of a cross-session search agent.",
+    "Given the user's project-wide question, write a brief intent plan:",
     "  - 2-4 plausible interpretations or angles",
     "  - one open uncertainty",
     "  - a single sentence prefixed with `Plan:` describing the evidence to gather",
@@ -481,16 +480,16 @@ export async function runSearchPipeline(args: {
     temperature: 0.55,
   });
 
-  // Phase 2 — pull evidence (no excluded session for search).
+  // Phase 2 - pull evidence (no excluded session for search).
   const evidence = await runEvidenceRetrieval({
     emit,
     supabase,
     projectId,
   });
 
-  // Phase 3 — synthesis.
+  // Phase 3 - synthesis.
   const synthSystem = [
-    "You answer project-wide questions about a fork-tree chat workspace as the attending physician of a clinical team.",
+    "You answer project-wide questions about a fork-tree chat workspace as a grounded agentic analyst.",
     "Be concise and factual. Cite supporting sessions inline using [[<session_id>]].",
     "Only cite sessions that appear in the evidence pack. If evidence is weak, say so explicitly and suggest what else to look at.",
     "Format with GitHub-flavored Markdown. Lead with the answer in 1-2 sentences, then go deeper if useful.",
@@ -500,7 +499,7 @@ export async function runSearchPipeline(args: {
   const synthesisPrompt = [
     `## User question\n${query}`,
     "",
-    "## Differential brainstorm (your own scratchpad — do not repeat verbatim)",
+    "## Intent plan (your own scratchpad - do not repeat verbatim)",
     brainstorm || "(empty)",
     "",
     "## Workspace evidence pack",
